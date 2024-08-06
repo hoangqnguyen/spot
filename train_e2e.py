@@ -18,7 +18,7 @@ import torchvision
 import timm
 from tqdm import tqdm
 
-from model.common import step, BaseRGBModel
+from model.common import step, BaseRGBModel, MLP
 from model.shift import make_temporal_shift
 from model.modules import *
 from dataset.frame import ActionSpotDataset, ActionSpotVideoDataset
@@ -72,7 +72,7 @@ def get_args():
         ], help='CNN architecture for feature extraction')
     parser.add_argument(
         '-t', '--temporal_arch', type=str, default='gru',
-        choices=['', 'gru', 'deeper_gru', 'mstcn', 'asformer'],
+        # choices=['', 'gru', 'deeper_gru', 'mstcn', 'asformer'],
         help='Spotting architecture, after spatial pooling')
 
     parser.add_argument('--clip_len', type=int, default=100)
@@ -105,6 +105,10 @@ def get_args():
     parser.add_argument('--fg_upsample', type=float)
 
     parser.add_argument('-mgpu', '--gpu_parallel', action='store_true')
+
+
+    parser.add_argument('--use_mse_loss', action='store_true',
+                        help='add MSE loss term to the training loss')
     return parser.parse_args()
 
 
@@ -189,6 +193,39 @@ class E2EModel(BaseRGBModel):
                 self._pred_fine = ASFormerPrediction(feat_dim, num_classes, 3)
             elif temporal_arch == '':
                 self._pred_fine = FCPrediction(feat_dim, num_classes)
+            elif temporal_arch == 'transformer_enc_only_base_11m':
+                from positional_encodings.torch_encodings import PositionalEncoding1D, Summer
+                from x_transformers import Encoder
+
+                hidden_dim = 256
+                down_projection = nn.Linear(feat_dim, hidden_dim) # feat_dim is too large, needs to down project
+                pos_enc = Summer(PositionalEncoding1D(hidden_dim)) # positional encoding for sequence
+                encoder = Encoder(
+                    dim = hidden_dim,
+                    depth = 5,
+                    heads = 8,
+                    attn_flash = True
+                ) # encoder-only transformer
+                fc = MLP(hidden_dim, hidden_dim, num_classes, 3) # final classifier
+
+                # put everything together
+                self._pred_fine = nn.Sequential(down_projection, pos_enc, encoder, fc)
+
+            elif temporal_arch == 'mamba_m':
+                from mamba_ssm import Mamba
+                hidden_dim = 1024
+                down_projection = nn.Linear(feat_dim, hidden_dim)
+                mamba = Mamba(
+                    # This module uses roughly 3 * expand * d_model^2 parameters
+                    d_model=hidden_dim, # Model dimension d_model
+                    d_state=16,  # SSM state expansion factor
+                    d_conv=4,    # Local convolution width
+                    expand=2,    # Block expansion factor
+                ).to("cuda")
+
+                fc = MLP(hidden_dim, hidden_dim, num_classes, 3)
+                self._pred_fine = nn.Sequential(down_projection, mamba, fc)
+
             else:
                 raise NotImplementedError(temporal_arch)
 
@@ -216,13 +253,13 @@ class E2EModel(BaseRGBModel):
 
             return self._pred_fine(im_feat)
 
+
         def print_stats(self):
-            print('Model params:',
-                sum(p.numel() for p in self.parameters()))
-            print('  CNN features:',
-                sum(p.numel() for p in self._features.parameters()))
-            print('  Temporal:',
-                sum(p.numel() for p in self._pred_fine.parameters()))
+            print(f"Model params:{sum(p.numel() for p in self.parameters()):,}")
+            print(
+                f"CNN features:{sum(p.numel() for p in self._features.parameters()):,}"
+            )
+            print(f"Temporal:{sum(p.numel() for p in self._pred_fine.parameters()):,}")
 
     def __init__(self, num_classes, feature_arch, temporal_arch, clip_len,
                  modality, device='cuda', multi_gpu=False):
