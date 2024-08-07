@@ -204,14 +204,17 @@ class E2EModel(BaseRGBModel):
                     dim = hidden_dim,
                     depth = 5,
                     heads = 8,
-                    attn_flash = True
+                    attn_flash = True,
+                    layer_dropout = 0.1,   # stochastic depth - dropout entire layer
+                    attn_dropout = 0.1,    # dropout post-attention
+                    ff_dropout = 0.1       # feedforward dropout
                 ) # encoder-only transformer
                 fc = MLP(hidden_dim, hidden_dim, num_classes, 3) # final classifier
 
                 # put everything together
                 self._pred_fine = nn.Sequential(down_projection, pos_enc, encoder, fc)
 
-            elif temporal_arch == 'mamba_m':
+            elif temporal_arch == 'mamba_1':
                 from mamba_ssm import Mamba
                 hidden_dim = 1024
                 down_projection = nn.Linear(feat_dim, hidden_dim)
