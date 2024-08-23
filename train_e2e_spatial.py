@@ -370,13 +370,15 @@ class E2EModel(BaseRGBModel):
 
                 epoch_loss += loss.detach().item()
                 epoch_loss_cls += loss_cls.detach().item()
-                epoch_loss_loc += loss_loc.detach().item()
+
+                if self._model._predict_location:
+                    epoch_loss_loc += loss_loc.detach().item()
 
                 pbar.set_postfix({'sum': loss.detach().item(),
                                   'cls': loss_cls.detach().item(),
                                   'loc': loss_loc.detach().item()})
 
-        return {"loss": epoch_loss / len(loader), "cls":  epoch_loss_cls / len(loader), "loc":  epoch_loss_loc / len(loader)}
+        return {"sum": epoch_loss / len(loader), "cls":  epoch_loss_cls / len(loader), "loc":  epoch_loss_loc / len(loader)}
 
     def predict(self, seq, use_amp=True):
         if not isinstance(seq, torch.Tensor):
