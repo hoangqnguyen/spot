@@ -296,7 +296,9 @@ class ActionSpotDataset(Dataset):
             pad_len=DEFAULT_PAD_LEN,    # Number of frames to pad the start
                                         # and end of videos
             fg_upsample=-1,             # Sample foreground explicitly
+            dataset='finediving'
     ):
+        self._dataset = dataset
         self._src_file = label_file
         self._labels = load_json(label_file)
         self._class_dict = classes
@@ -390,11 +392,14 @@ class ActionSpotDataset(Dataset):
             video_meta, base_idx = self._sample_uniform()
 
         labels = np.zeros(self._clip_len, np.int64)
+        event_xys = np.zeros((self._clip_len, 2), np.float32) if 'kovo' in self._dataset else None
+
         for event in video_meta['events']:
             event_frame = event['frame']
 
             # Index of event in label array
             label_idx = (event_frame - base_idx) // self._stride
+
             if (label_idx >= -self._dilate_len
                 and label_idx < self._clip_len + self._dilate_len
             ):
@@ -404,6 +409,8 @@ class ActionSpotDataset(Dataset):
                     min(self._clip_len, label_idx + self._dilate_len + 1)
                 ):
                     labels[i] = label
+                    if event_xys is not None:
+                        event_xys[i] = event.get('xy', [0, 0])
 
         frames = self._frame_reader.load_frames(
             video_meta['video'], base_idx,
@@ -411,7 +418,7 @@ class ActionSpotDataset(Dataset):
             stride=self._stride, randomize=not self._is_eval)
 
         return {'frame': frames, 'contains_event': int(np.sum(labels) > 0),
-                'label': labels}
+                'label': labels, 'xy': event_xys}
 
     def __getitem__(self, unused):
         ret = self._get_one()
@@ -554,3 +561,25 @@ class ActionSpotVideoDataset(Dataset):
         print('{} : {} videos, {} frames ({} stride), {:0.5f}% non-bg'.format(
             self._src_file, len(self._labels), num_frames, self._stride,
             num_events / num_frames * 100))
+
+if __name__ == '__main__':
+    from util.dataset import DATASETS, load_classes
+    from easydict import EasyDict as edict
+    args = edict()
+    args.dataset = 'kovo_288p'
+    classes = load_classes(os.path.join('data', args.dataset, 'class.txt'))
+    args.crop_dim = 224
+    args.dilate_len = 0
+    args.mixup = False
+    args.clip_len = 16
+    args.modality = 'rgb'
+    dataset_len = 300_000 // args.clip_len
+    dataset_kwargs = {
+        'crop_dim': args.crop_dim, 'dilate_len': args.dilate_len,
+        'mixup': args.mixup, 'dataset': args.dataset
+    }
+    train_data = ActionSpotDataset(
+        classes, os.path.join('data', args.dataset, 'train.json'),
+        args.frame_dir, args.modality, args.clip_len, dataset_len,
+        is_eval=False, **dataset_kwargs)
+    train_data.print_info()
