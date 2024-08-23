@@ -26,13 +26,15 @@ from util.eval import process_frame_predictions
 from util.io import load_json, store_json, store_gz_json, clear_files
 from util.dataset import DATASETS, load_classes
 from util.score import compute_mAPs
-from util.det import convert_target_to_prediction_shape, visualize_prediction_grid
+from util.det import convert_target_to_prediction_shape, convert_prediction_to_target_shape
 
 EPOCH_NUM_FRAMES = 500000
+# EPOCH_NUM_FRAMES = 200
 
 BASE_NUM_WORKERS = 4
 
 BASE_NUM_VAL_EPOCHS = 20
+# BASE_NUM_VAL_EPOCHS = 2
 
 INFERENCE_BATCH_SIZE = 4
 
@@ -388,21 +390,24 @@ class E2EModel(BaseRGBModel):
         if seq.device != self.device:
             seq = seq.to(self.device)
 
+        B, T = seq.shape[:2]
+
         self._model.eval()
         with torch.no_grad():
             with torch.cuda.amp.autocast() if use_amp else nullcontext():
-                pred = self._model(seq)
-            if isinstance(pred, tuple):
-                pred = pred[0]
-            if len(pred.shape) > 3:
-                pred = pred[-1]
-            pred = torch.softmax(pred, axis=2)
-            pred_cls = torch.argmax(pred, axis=2)
-            return pred_cls.cpu().numpy(), pred.cpu().numpy()
+                pred_dict = self._model(seq)
+            pred_cls_score = torch.softmax(pred_dict['im_feat'], axis=2).cpu().numpy()
+            pred_cls = torch.argmax(pred_dict['im_feat'], axis=2).cpu().numpy()
+            if self._model._predict_location:
+                pred_loc = convert_prediction_to_target_shape(pred_dict["loc_feat"].reshape(B, T, self._model._P, self._model._P, 3), P=self._model._P, presence_threshold=.5).cpu().numpy()
+                return pred_cls, pred_cls_score, pred_loc
+            else:
+                return pred_cls, pred_cls_score
 
 
 def evaluate(model, dataset, split, classes, save_pred, calc_stats=True,
-             save_scores=True):
+             save_scores=True, predict_location=False):
+    # TODO: Add eval for spatial predictions
     pred_dict = {}
     for video, video_len, _ in dataset.videos:
         pred_dict[video] = (
@@ -418,15 +423,22 @@ def evaluate(model, dataset, split, classes, save_pred, calc_stats=True,
     )):
         if batch_size > 1:
             # Batched by dataloader
-            _, batch_pred_scores = model.predict(clip['frame'])
+            if predict_location:
+                _, batch_pred_scores, batch_pred_loc = model.predict(clip['frame'])
+            else:
+                _, batch_pred_scores = model.predict(clip['frame'])
 
             for i in range(clip['frame'].shape[0]):
                 video = clip['video'][i]
                 scores, support = pred_dict[video]
+
                 pred_scores = batch_pred_scores[i]
+                pred_loc = batch_pred_loc[i]
+
                 start = clip['start'][i].item()
                 if start < 0:
                     pred_scores = pred_scores[-start:, :]
+                    pred_loc = pred_loc[-start:, :] # TODO: continue from here
                     start = 0
                 end = start + pred_scores.shape[0]
                 if end >= scores.shape[0]:
@@ -437,10 +449,15 @@ def evaluate(model, dataset, split, classes, save_pred, calc_stats=True,
 
         else:
             # Batched by dataset
+
             scores, support = pred_dict[clip['video'][0]]
 
             start = clip['start'][0].item()
-            _, pred_scores = model.predict(clip['frame'][0])
+            if predict_location:
+                _, pred_scores, pred_loc = model.predict(clip['frame'][0])
+            else:
+                _, pred_scores = model.predict(clip['frame'][0])
+
             if start < 0:
                 pred_scores = pred_scores[:, -start:, :]
                 start = 0
@@ -675,7 +692,7 @@ def main(args):
                         args.save_dir, 'pred-val.{}'.format(epoch))
                     os.makedirs(args.save_dir, exist_ok=True)
                 val_mAP = evaluate(model, val_data_frames, 'VAL', classes,
-                                    pred_file, save_scores=False)
+                                    pred_file, save_scores=False, predict_location=args.predict_location)
                 if args.criterion == 'map' and val_mAP > best_criterion:
                     best_criterion = val_mAP
                     best_epoch = epoch

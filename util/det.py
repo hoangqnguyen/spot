@@ -1,6 +1,5 @@
 import torch
 import matplotlib.pyplot as plt
-import numpy as np
 
 def convert_target_to_prediction_shape(target, P):
     B, T, _ = target.shape
@@ -92,7 +91,7 @@ def visualize_prediction_grid(target, output, P):
         plt.suptitle(f'Batch {b + 1}')
         plt.show()
 
-def convert_prediction_to_target_shape(prediction, P):
+def convert_prediction_to_target_shape(prediction, P, presence_threshold=0.5):
     B, T, _, _, _ = prediction.shape
     
     # Initialize the output tensor
@@ -109,20 +108,25 @@ def convert_prediction_to_target_shape(prediction, P):
     x_idx = max_indices // P
     y_idx = max_indices % P
     
-    # Get the x and y offsets
-    x_offset = prediction[torch.arange(B).unsqueeze(1), torch.arange(T), x_idx, y_idx, 1]
-    y_offset = prediction[torch.arange(B).unsqueeze(1), torch.arange(T), x_idx, y_idx, 2]
+    # Get the max presence score for each (B, T)
+    max_presence_scores = object_presence.view(B, T, -1).max(-1).values
+    
+    # Mask to ignore x, y calculation if presence score is below threshold
+    mask = max_presence_scores >= presence_threshold
+    
+    # Get the x and y offsets only for those above the threshold
+    x_offset = prediction[torch.arange(B).unsqueeze(1), torch.arange(T), x_idx, y_idx, 1] * mask.float()
+    y_offset = prediction[torch.arange(B).unsqueeze(1), torch.arange(T), x_idx, y_idx, 2] * mask.float()
     
     # Compute the patch centers (in normalized coordinates)
-    patch_centers_x = (x_idx.float() + 0.5) * patch_size
-    patch_centers_y = (y_idx.float() + 0.5) * patch_size
+    patch_centers_x = (x_idx.float() + 0.5) * patch_size * mask.float()
+    patch_centers_y = (y_idx.float() + 0.5) * patch_size * mask.float()
     
-    # Compute the final (x, y) coordinates
+    # Compute the final (x, y) coordinates, applying the mask
     target[..., 0] = patch_centers_x + x_offset
     target[..., 1] = patch_centers_y + y_offset
     
-    return target
-
+    return target  # B, T, 2
 
 
 if __name__ == '__main__':
@@ -144,3 +148,4 @@ if __name__ == '__main__':
         print("DIFF=", diff)
         print("="* 20)
         # print(f"target_reconstructed: {target_reconstructed}")
+
