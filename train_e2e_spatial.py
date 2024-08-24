@@ -477,7 +477,7 @@ class E2EModel(BaseRGBModel):
                             objectness_loss = sigmoid_focal_loss(
                                 objectness,
                                 target_objectness,
-                                reduction="mean",
+                                reduction="sum",
                                 alpha=0.25,
                                 gamma=2.0,
                             )
