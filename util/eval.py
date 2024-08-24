@@ -138,7 +138,10 @@ def process_frame_predictions_with_location(
         pred = np.argmax(scores, axis=1)
 
         err.update(label, pred)
-        loc_err = np.linalg.norm(locations_pred - location_gt, axis=1)
+
+        loc_err = np.linalg.norm(locations_pred - location_gt, axis=1)[label != 0]
+        # breakpoint()
+
         location_errs = np.concatenate((location_errs, loc_err))
 
         pred_scores[video] = scores.tolist()
