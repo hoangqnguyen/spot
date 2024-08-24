@@ -113,6 +113,68 @@ def process_frame_predictions(
     return err, f1, pred_events, pred_events_high_recall, pred_scores
 
 
+def process_frame_predictions_with_location(
+        dataset, classes, pred_dict, high_recall_score_threshold=0.01
+):
+    classes_inv = {v: k for k, v in classes.items()}
+
+    fps_dict = {}
+    for video, _, fps in dataset.videos:
+        fps_dict[video] = fps
+
+    err = ErrorStat()
+    f1 = ForegroundF1()
+
+    pred_events = []
+    pred_events_high_recall = []
+    pred_scores = {}
+    location_errs = np.empty((0,))
+
+    for video, (scores, support, locations_pred) in sorted(pred_dict.items()):
+        label, location_gt = dataset.get_labels(video, with_locations=True)
+        # support[support == 0] = 1   # get rid of divide by zero
+        assert np.min(support) > 0, (video, support.tolist())
+        scores /= support[:, None]
+        pred = np.argmax(scores, axis=1)
+
+        err.update(label, pred)
+        loc_err = np.linalg.norm(locations_pred - location_gt, axis=1)
+        location_errs = np.concatenate((location_errs, loc_err))
+
+        pred_scores[video] = scores.tolist()
+
+        events = []
+        events_high_recall = []
+        for i in range(pred.shape[0]):
+            f1.update(label[i], pred[i])
+
+            if pred[i] != 0:
+                events.append({
+                    'label': classes_inv[pred[i]],
+                    'frame': i,
+                    'score': scores[i, pred[i]].item(),
+                    'xy': locations_pred[i].tolist()
+                })
+
+            for j in classes_inv:
+                if scores[i, j] >= high_recall_score_threshold:
+                    events_high_recall.append({
+                        'label': classes_inv[j],
+                        'frame': i,
+                        'score': scores[i, j].item(),
+                        'xy': locations_pred[i].tolist()
+                    })
+
+        pred_events.append({
+            'video': video, 'events': events,
+            'fps': fps_dict[video]})
+        pred_events_high_recall.append({
+            'video': video, 'events': events_high_recall,
+            'fps': fps_dict[video]})
+
+    return err, f1, pred_events, pred_events_high_recall, pred_scores, location_errs
+
+
 def non_maximum_supression(pred, window):
     new_pred = []
     for video_pred in pred:

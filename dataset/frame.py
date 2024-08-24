@@ -513,20 +513,26 @@ class ActionSpotVideoDataset(Dataset):
         return {'video': video_name, 'start': start // self._stride,
                 'frame': frames}
 
-    def get_labels(self, video):
+    def get_labels(self, video, with_locations=False):
         meta = self._labels[self._video_idxs[video]]
         num_frames = meta['num_frames']
         num_labels = num_frames // self._stride
         if num_frames % self._stride != 0:
             num_labels += 1
         labels = np.zeros(num_labels, np.int32)
+        if with_locations:
+            locations = np.zeros((num_labels, 2), np.float32)
         for event in meta['events']:
             frame = event['frame']
             if frame < num_frames:
                 labels[frame // self._stride] = self._class_dict[event['label']]
+                if with_locations:
+                    locations[frame // self._stride] = event.get('xy', [0, 0])
             else:
                 print('Warning: {} >= {} is past the end {}'.format(
                     frame, num_frames, meta['video']))
+        if with_locations:
+            return labels, locations
         return labels
 
     @property

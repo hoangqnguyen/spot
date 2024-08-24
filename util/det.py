@@ -126,7 +126,7 @@ def convert_prediction_to_target_shape(prediction, P, presence_threshold=0.5):
     target[..., 0] = patch_centers_x + x_offset
     target[..., 1] = patch_centers_y + y_offset
     
-    return target  # B, T, 2
+    return torch.clamp(target, min=0, max=1)  # B, T, 2
 
 
 if __name__ == '__main__':
