@@ -466,36 +466,38 @@ class E2EModel(BaseRGBModel):
                             pred[i].reshape(-1, self._num_classes), label, **ce_kwargs
                         )
 
-                        if self._model._predict_location:
-                            # Assume the objectness score is the first element in loc[i], and the rest are x and y coordinates.
-                            pred_loc = loc[i].reshape(-1, 3)
-                            objectness = pred_loc[:, 0]
-                            pred_xy = pred_loc[:, 1:]  # x and y coordinates displacement
+                    if self._model._predict_location:
+                        # Assume the objectness score is the first element in loc[i], and the rest are x and y coordinates.
+                        # breakpoint()
+                        pred_loc = loc.reshape(-1, 3)
+                        objectness = pred_loc[:, 0]
+                        pred_xy = pred_loc[:, 1:]  # x and y coordinates displacement
 
-                            # Extract the target objectness and xy values
-                            tar = target_xy[i].reshape(-1, 3)
-                            target_objectness = tar[:, 0].to(self.device)
-                            target_xy_values = tar[:, 1:].to(self.device)
+                        # Extract the target objectness and xy values
+                        tar = target_xy.reshape(-1, 3)
+                        target_objectness = tar[:, 0].to(self.device)
+                        target_xy_values = tar[:, 1:].to(self.device)
 
-                            # objectness loss
-                            objectness_loss = sigmoid_focal_loss(
-                                objectness,
-                                target_objectness,
-                                reduction="sum",
-                                alpha=0.25,
-                                gamma=2.0,
-                            ) # this applies sigmoid to objectness automatically
+                        # objectness loss
+                        objectness_loss = sigmoid_focal_loss(
+                            objectness,
+                            target_objectness,
+                            reduction="mean",
+                            alpha=0.25,
+                            gamma=2.0,
+                        ) # this applies sigmoid to objectness automatically
 
-                            # Mask the xy_loss, only calculate it where there are positive samples (object present)
-                            positive_mask = (target_objectness > 0).float()
+                        # Mask the xy_loss, only calculate it where there are positive samples (object present)
+                        positive_mask = (target_objectness > 0).float()
 
-                            # Apply the standard L1 loss to the masked x and y coordinates
-                            xy_loss = F.l1_loss(
-                                pred_xy.sigmoid(), target_xy_values, reduction="none"
-                            ).sum(dim=-1)
-                            masked_xy_loss = (xy_loss * positive_mask).sum()
-                            # Calculate the total localization loss
-                            loss_loc += objectness_loss + masked_xy_loss
+                        # Apply the standard L1 loss to the masked x and y coordinates
+                        xy_loss = F.l1_loss(
+                            pred_xy.sigmoid(), target_xy_values, reduction="none"
+                        ).sum(dim=-1)
+                        masked_xy_loss = (xy_loss * positive_mask).mean()
+                        # Calculate the total localization loss
+                        loss_loc += objectness_loss + masked_xy_loss
+                        # breakpoint()
 
                     loss = loss_cls + loss_loc
 
