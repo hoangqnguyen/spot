@@ -552,7 +552,7 @@ class E2EModel(BaseRGBModel):
                         ),
                         P=self._model._P,
                         presence_threshold=presence_threshold,
-                        appy_sigmoid=True,
+                        apply_sigmoid=True,
                     )
                     .cpu()
                     .numpy()
