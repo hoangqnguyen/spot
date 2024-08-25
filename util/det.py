@@ -14,26 +14,22 @@ def convert_target_to_prediction_shape(target, P):
     x_idx = torch.clamp((target[..., 0] * P).long(), max=P-1)
     y_idx = torch.clamp((target[..., 1] * P).long(), max=P-1)
 
-    # Compute patch centers (vectorized)
-    patch_centers_x = (x_idx.float() + 0.5) * patch_size
-    patch_centers_y = (y_idx.float() + 0.5) * patch_size
+    # Compute the top-left corner of each patch in normalized coordinates
+    top_left_x = x_idx.float() * patch_size
+    top_left_y = y_idx.float() * patch_size
 
-    # Compute offsets from patch centers (vectorized)
-    x_offset = target[..., 0] - patch_centers_x
-    y_offset = target[..., 1] - patch_centers_y
+    # Compute offsets from the top-left corner (vectorized)
+    x_offset = (target[..., 0] - top_left_x) / patch_size
+    y_offset = (target[..., 1] - top_left_y) / patch_size
 
-    # Print debug information
-    # print(f"x_idx: {x_idx}, y_idx: {y_idx}")
-    # print(f"patch_centers_x: {patch_centers_x}, patch_centers_y: {patch_centers_y}")
-    # print(f"x_offset: {x_offset}, y_offset: {y_offset}")
-
-    # Set object presence flag and offsets in the output tensor
+    # Set object presence flag and normalized offsets in the output tensor
     object_presence = ((target[..., 0] != 0) | (target[..., 1] != 0)).float()
     output[torch.arange(B).unsqueeze(1), torch.arange(T), x_idx, y_idx, 0] = object_presence
     output[torch.arange(B).unsqueeze(1), torch.arange(T), x_idx, y_idx, 1] = x_offset
     output[torch.arange(B).unsqueeze(1), torch.arange(T), x_idx, y_idx, 2] = y_offset
 
     return output
+import matplotlib.pyplot as plt
 
 def visualize_prediction_grid(target, output, P):
     """
@@ -73,16 +69,16 @@ def visualize_prediction_grid(target, output, P):
             x_idx = min(int(x * P), P - 1)
             y_idx = min(int(y * P), P - 1)
 
-            # Plot the patch center
-            patch_center_x = (x_idx + 0.5) * patch_size
-            patch_center_y = (y_idx + 0.5) * patch_size
-            ax.plot(patch_center_x, patch_center_y, 'go', label='Patch Center')
+            # Plot the top-left corner of the patch
+            top_left_x = x_idx * patch_size
+            top_left_y = y_idx * patch_size
+            ax.plot(top_left_x, top_left_y, 'go', label='Top-Left Corner')
 
             # Plot the offset position within the patch
-            x_offset = output[b, t, x_idx, y_idx, 1]
-            y_offset = output[b, t, x_idx, y_idx, 2]
-            pred_x = patch_center_x + x_offset
-            pred_y = patch_center_y + y_offset
+            x_offset = output[b, t, x_idx, y_idx, 1] * patch_size
+            y_offset = output[b, t, x_idx, y_idx, 2] * patch_size
+            pred_x = top_left_x + x_offset
+            pred_y = top_left_y + y_offset
             ax.plot(pred_x, pred_y, 'bx', label='Predicted Offset Position')
 
             ax.legend()
@@ -91,7 +87,8 @@ def visualize_prediction_grid(target, output, P):
         plt.suptitle(f'Batch {b + 1}')
         plt.show()
 
-def convert_prediction_to_target_shape(prediction, P, presence_threshold=0.5, appy_sigmoid=False):
+
+def convert_prediction_to_target_shape(prediction, P, presence_threshold=0.5, apply_sigmoid=False):
     B, T, _, _, _ = prediction.shape
     
     # Initialize the output tensor
@@ -100,6 +97,8 @@ def convert_prediction_to_target_shape(prediction, P, presence_threshold=0.5, ap
     # Compute the size of each patch in normalized coordinates
     patch_size = 1.0 / P
 
+    if apply_sigmoid:
+        prediction = torch.sigmoid(prediction)
     # Find the patch with the object presence flag set
     object_presence = prediction[..., 0]  # Shape: (B, T, P, P)
     max_indices = object_presence.view(B, T, -1).argmax(-1)  # Shape: (B, T)
@@ -110,8 +109,6 @@ def convert_prediction_to_target_shape(prediction, P, presence_threshold=0.5, ap
     
     # Get the max presence score for each (B, T)
     presence_scores = object_presence.view(B, T, -1)
-    if appy_sigmoid:
-        presence_scores = torch.sigmoid(presence_scores)
     max_presence_scores = presence_scores.max(-1).values
     
     # Mask to ignore x, y calculation if presence score is below threshold
@@ -121,13 +118,13 @@ def convert_prediction_to_target_shape(prediction, P, presence_threshold=0.5, ap
     x_offset = prediction[torch.arange(B).unsqueeze(1), torch.arange(T), x_idx, y_idx, 1] * mask.float()
     y_offset = prediction[torch.arange(B).unsqueeze(1), torch.arange(T), x_idx, y_idx, 2] * mask.float()
     
-    # Compute the patch centers (in normalized coordinates)
-    patch_centers_x = (x_idx.float() + 0.5) * patch_size * mask.float()
-    patch_centers_y = (y_idx.float() + 0.5) * patch_size * mask.float()
+    # Compute the top-left corner (in normalized coordinates)
+    top_left_x = x_idx.float() * patch_size * mask.float()
+    top_left_y = y_idx.float() * patch_size * mask.float()
     
     # Compute the final (x, y) coordinates, applying the mask
-    target[..., 0] = patch_centers_x + x_offset
-    target[..., 1] = patch_centers_y + y_offset
+    target[..., 0] = top_left_x + (x_offset * patch_size)
+    target[..., 1] = top_left_y + (y_offset * patch_size)
     
     return torch.clamp(target, min=0, max=1)  # B, T, 2
 
@@ -148,7 +145,7 @@ if __name__ == '__main__':
         target_reconstructed = convert_prediction_to_target_shape(output, P)
 
         diff = (target - target_reconstructed).abs().sum()
-        print("DIFF=", diff)
+        print("DIFF =", diff.item())
         print("="* 20)
         # print(f"target_reconstructed: {target_reconstructed}")
 

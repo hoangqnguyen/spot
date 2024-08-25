@@ -470,7 +470,7 @@ class E2EModel(BaseRGBModel):
                             # Assume the objectness score is the first element in loc[i], and the rest are x and y coordinates.
                             pred_loc = loc[i].reshape(-1, 3)
                             objectness = pred_loc[:, 0]
-                            pred_xy = pred_loc[:, 1:].tanh()  # x and y coordinates displacement
+                            pred_xy = pred_loc[:, 1:]  # x and y coordinates displacement
 
                             # Extract the target objectness and xy values
                             tar = target_xy[i].reshape(-1, 3)
@@ -491,7 +491,7 @@ class E2EModel(BaseRGBModel):
 
                             # Apply the standard L1 loss to the masked x and y coordinates
                             xy_loss = F.l1_loss(
-                                pred_xy, target_xy_values, reduction="none"
+                                pred_xy.sigmoid(), target_xy_values, reduction="none"
                             ).sum(dim=-1)
                             masked_xy_loss = (xy_loss * positive_mask).sum()
                             # Calculate the total localization loss
