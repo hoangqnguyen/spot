@@ -91,7 +91,7 @@ def visualize_prediction_grid(target, output, P):
         plt.suptitle(f'Batch {b + 1}')
         plt.show()
 
-def convert_prediction_to_target_shape(prediction, P, presence_threshold=0.5):
+def convert_prediction_to_target_shape(prediction, P, presence_threshold=0.5, appy_sigmoid=False):
     B, T, _, _, _ = prediction.shape
     
     # Initialize the output tensor
@@ -109,7 +109,10 @@ def convert_prediction_to_target_shape(prediction, P, presence_threshold=0.5):
     y_idx = max_indices % P
     
     # Get the max presence score for each (B, T)
-    max_presence_scores = object_presence.view(B, T, -1).max(-1).values
+    presence_scores = object_presence.view(B, T, -1)
+    if appy_sigmoid:
+        presence_scores = torch.sigmoid(presence_scores)
+    max_presence_scores = presence_scores.max(-1).values
     
     # Mask to ignore x, y calculation if presence score is below threshold
     mask = max_presence_scores >= presence_threshold

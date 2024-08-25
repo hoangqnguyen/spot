@@ -7,3 +7,4 @@ kovo_train
 exp/*
 train_schedule*.sh
 Test.ipynb
+eval.ipynb

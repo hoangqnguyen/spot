@@ -366,6 +366,10 @@ class E2EModel(BaseRGBModel):
                     0, 2, 3, 1
                 )  # B*T, H, W, 3
 
+                # loc_obj = loc_feat[..., :1].sigmoid()
+                # loc_xy_displace = loc_feat[..., 1:].tanh()
+                # loc_feat = torch.cat([loc_obj, loc_xy_displace], dim=-1)
+
             return {"im_feat": self._pred_fine(im_feat), "loc_feat": loc_feat}
 
         def print_stats(self):
@@ -466,7 +470,7 @@ class E2EModel(BaseRGBModel):
                             # Assume the objectness score is the first element in loc[i], and the rest are x and y coordinates.
                             pred_loc = loc[i].reshape(-1, 3)
                             objectness = pred_loc[:, 0]
-                            pred_xy = pred_loc[:, 1:]  # x and y coordinates
+                            pred_xy = pred_loc[:, 1:].tanh()  # x and y coordinates displacement
 
                             # Extract the target objectness and xy values
                             tar = target_xy[i].reshape(-1, 3)
@@ -480,7 +484,7 @@ class E2EModel(BaseRGBModel):
                                 reduction="sum",
                                 alpha=0.25,
                                 gamma=2.0,
-                            )
+                            ) # this applies sigmoid to objectness automatically
 
                             # Mask the xy_loss, only calculate it where there are positive samples (object present)
                             positive_mask = (target_objectness > 0).float()
@@ -524,7 +528,7 @@ class E2EModel(BaseRGBModel):
             "loc": epoch_loss_loc / len(loader),
         }
 
-    def predict(self, seq, use_amp=True, presence_threshold=0.5):
+    def predict(self, seq, use_amp=True, presence_threshold=0.):
         if not isinstance(seq, torch.Tensor):
             seq = torch.FloatTensor(seq)
         if len(seq.shape) == 4:  # (L, C, H, W)
@@ -548,6 +552,7 @@ class E2EModel(BaseRGBModel):
                         ),
                         P=self._model._P,
                         presence_threshold=presence_threshold,
+                        appy_sigmoid=True,
                     )
                     .cpu()
                     .numpy()
