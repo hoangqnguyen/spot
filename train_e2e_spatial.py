@@ -494,7 +494,7 @@ class E2EModel(BaseRGBModel):
                         xy_loss = F.l1_loss(
                             pred_xy.sigmoid(), target_xy_values, reduction="none"
                         ).sum(dim=-1)
-                        masked_xy_loss = (xy_loss * positive_mask).mean()
+                        masked_xy_loss = (xy_loss * positive_mask).sum() # sum coz they are rare and we want to penalize them more
                         # Calculate the total localization loss
                         loss_loc += objectness_loss + masked_xy_loss
                         # breakpoint()
