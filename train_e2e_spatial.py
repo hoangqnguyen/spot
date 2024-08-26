@@ -483,7 +483,7 @@ class E2EModel(BaseRGBModel):
                             objectness,
                             target_objectness,
                             reduction="mean",
-                            alpha=0.25,
+                            alpha=0.95,
                             gamma=2.0,
                         ) # this applies sigmoid to objectness automatically
 
