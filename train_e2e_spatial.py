@@ -331,12 +331,18 @@ class E2EModel(BaseRGBModel):
                 self._pos_c = 368
                 self._P = 7
                 # self._pred_loc = FCLayers(self._feat_dim, 2)
-                self._pred_loc = nn.Conv2d(
+
+                # self._pred_loc = nn.Conv2d(
+                #     in_channels=self._pos_c,
+                #     out_channels=3,
+                #     kernel_size=1,
+                #     stride=1,
+                #     padding=0,
+                # )
+                from model.modules import ImprovedLocationPredictor
+
+                self._pred_loc = ImprovedLocationPredictor(
                     in_channels=self._pos_c,
-                    out_channels=3,
-                    kernel_size=1,
-                    stride=1,
-                    padding=0,
                 )
 
         def forward(self, x):
