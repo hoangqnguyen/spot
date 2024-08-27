@@ -342,7 +342,7 @@ class E2EModel(BaseRGBModel):
                 from model.modules import ImprovedLocationPredictor
 
                 self._pred_loc = ImprovedLocationPredictor(
-                    in_channels=self._pos_c,
+                    self._pos_c, hidden_dim=128, out_dim=2, nhead=4, num_layers=3
                 )
 
         def forward(self, x):
@@ -368,13 +368,11 @@ class E2EModel(BaseRGBModel):
 
             loc_feat = None
             if self._predict_location:
-                loc_feat = self._pred_loc(self.__cnn_features).permute(
-                    0, 2, 3, 1
-                )  # B*T, H, W, 3
-
-                # loc_obj = loc_feat[..., :1].sigmoid()
-                # loc_xy_displace = loc_feat[..., 1:].tanh()
-                # loc_feat = torch.cat([loc_obj, loc_xy_displace], dim=-1)
+                # breakpoint()
+                # loc_feat = self._pred_loc(self.__cnn_features).permute(
+                #     0, 2, 3, 1
+                # )  # B*T, H, W, 2
+                loc_feat = self._pred_loc(self.__cnn_features)  # B*T, 2
 
             return {"im_feat": self._pred_fine(im_feat), "loc_feat": loc_feat}
 
@@ -384,6 +382,8 @@ class E2EModel(BaseRGBModel):
                 f"CNN features:{sum(p.numel() for p in self._features.parameters()):,}"
             )
             print(f"Temporal:{sum(p.numel() for p in self._pred_fine.parameters()):,}")
+            if hasattr(self, "_pred_loc"):
+                print(f"Spatial:{sum(p.numel() for p in self._pred_loc.parameters()):,}")
 
     def __init__(
         self,
@@ -445,9 +445,7 @@ class E2EModel(BaseRGBModel):
                 label = batch["label"].to(self.device)
 
                 if self._model._predict_location:
-                    target_xy = convert_target_to_prediction_shape(
-                        batch["xy"], self._model._P
-                    ).flatten(0, 1)
+                    target_xy = batch["xy"].to(self.device).reshape(-1, 2) # B*T, 2
 
                 # Depends on whether mixup is used
                 label = (
@@ -475,36 +473,16 @@ class E2EModel(BaseRGBModel):
                     if self._model._predict_location:
                         # Assume the objectness score is the first element in loc[i], and the rest are x and y coordinates.
                         # breakpoint()
-                        pred_loc = loc.reshape(-1, 3)
-                        objectness = pred_loc[:, 0]
-                        pred_xy = pred_loc[:, 1:]  # x and y coordinates displacement
+                        pred_loc = loc.reshape(-1, 2) # B*T, 2
 
-                        # Extract the target objectness and xy values
-                        tar = target_xy.reshape(-1, 3)
-                        target_objectness = tar[:, 0].to(self.device)
-                        target_xy_values = tar[:, 1:].to(self.device)
-
-                        # objectness loss
-                        objectness_loss = sigmoid_focal_loss(
-                            objectness,
-                            target_objectness,
-                            reduction="mean",
-                            alpha=0.995,
-                            gamma=2.0,
-                        ) # this applies sigmoid to objectness automatically
-
-                        # Mask the xy_loss, only calculate it where there are positive samples (object present)
-                        positive_mask = (target_objectness > 0).float()
+                        event_mask = (label != 0).float().reshape(-1) # B*T
 
                         # Apply the standard L1 loss to the masked x and y coordinates
                         xy_loss = F.l1_loss(
-                            pred_xy.sigmoid(), target_xy_values, reduction="none"
+                            pred_loc.sigmoid(), target_xy, reduction="none"
                         ).sum(dim=-1)
-                        masked_xy_loss = (xy_loss * positive_mask).sum() / positive_mask.sum() # sum coz they are rare and we want to penalize them more
-                        # breakpoint()
-                        # Calculate the total localization loss
-                        loss_loc += objectness_loss + masked_xy_loss
-                        # breakpoint()
+
+                        loss_loc += (xy_loss * event_mask).sum() / event_mask.sum()
 
                     loss = loss_cls + loss_loc
 
@@ -555,14 +533,9 @@ class E2EModel(BaseRGBModel):
             pred_cls = torch.argmax(pred_dict["im_feat"], axis=2).cpu().numpy()
             if self._model._predict_location:
                 pred_loc = (
-                    convert_prediction_to_target_shape(
-                        pred_dict["loc_feat"].reshape(
-                            B, T, self._model._P, self._model._P, 3
-                        ),
-                        P=self._model._P,
-                        presence_threshold=presence_threshold,
-                        apply_sigmoid=True,
-                    )
+                    pred_dict["loc_feat"]
+                    .detach()
+                    .sigmoid()
                     .cpu()
                     .numpy()
                 )  # B, T, 2
