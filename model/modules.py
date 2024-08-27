@@ -120,7 +120,7 @@ class ImprovedLocationPredictor(nn.Module):
             x: (B, C, H, W)
         """
         B, C, H, W = x.shape
-        breakpoint()
+        # breakpoint()
         x = self.in_proj(x).permute(0, 2, 3, 1)  # (B, H, W, C)
         x = self.pos_2d_enc(x)  # (B, H, W, C)
         x = x.reshape(B, H * W, -1)  # (B, H * W, C)
