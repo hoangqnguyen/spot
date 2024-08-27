@@ -35,6 +35,8 @@ from util.det import (
 )
 from torchvision.ops.focal_loss import sigmoid_focal_loss
 
+import warnings
+warnings.filterwarnings("ignore")
 
 EPOCH_NUM_FRAMES = 500000
 # EPOCH_NUM_FRAMES = 500
@@ -360,6 +362,8 @@ class E2EModel(BaseRGBModel):
                 f"CNN features:{sum(p.numel() for p in self._features.parameters()):,}"
             )
             print(f"Temporal:{sum(p.numel() for p in self._pred_fine.parameters()):,}")
+            if hasattr(self, "_pred_loc"):
+                print(f"Spatial:{sum(p.numel() for p in self._pred_loc.parameters()):,}")
 
     def __init__(
         self,
