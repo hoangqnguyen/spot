@@ -145,3 +145,34 @@ class MLP(nn.Module):
         for i, layer in enumerate(self.layers):
             x = F.relu(layer(x)) if i < self.num_layers - 1 else layer(x)
         return x
+    
+
+class TransformerArch(nn.Module):
+        def __init__(self, in_dim, hidden_dim, out_dim, nhead=4, num_layers=3):
+            super(TransformerArch, self).__init__()
+            self.in_proj = nn.Linear(in_dim, hidden_dim)
+
+            self.transformer = nn.Transformer(
+                d_model=hidden_dim, nhead=nhead, num_encoder_layers=num_layers, num_decoder_layers=num_layers, batch_first=True)
+            
+            self.location_queries = nn.Parameter(torch.zeros(1, 1, hidden_dim))
+            self.mlp = MLP(hidden_dim, hidden_dim * 4, hidden_dim, num_layers)
+            self.fc_out = nn.Linear(hidden_dim, out_dim)
+    
+        def forward(self, x):
+            x = self.in_proj(x)
+            x = self.transformer(x, self.location_queries.expand(x.size(0), x.size(1), -1))
+            x = self.mlp(x)
+            x = self.fc_out(x)
+            return x
+
+if __name__ == '__main__':
+    # Test the model
+    model = TransformerArch(368, 128, 2, nhead=4, num_layers=2)
+    # Print total params nicely
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f'{total_params:,} total parameters.')
+    x = torch.randn(2, 64, 368)
+    y = model(x)
+    print(y.shape)
+    # print(y)

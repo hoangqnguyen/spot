@@ -18,7 +18,7 @@ import torchvision
 import timm
 from tqdm import tqdm
 
-from model.common import step, BaseRGBModel, MLP
+from model.common import step, BaseRGBModel, MLP, TransformerArch
 from model.shift import make_temporal_shift
 from model.modules import *
 from dataset.frame import ActionSpotDataset, ActionSpotVideoDataset
@@ -314,9 +314,15 @@ class E2EModel(BaseRGBModel):
 
             self._predict_location = predict_location
             if self._predict_location:
-                self._pred_loc = nn.Sequential(
-                    MLP(hidden_dim, hidden_dim * 4, output_dim=hidden_dim, num_layers=3),
-                    nn.Linear(hidden_dim, 2),
+                # self._pred_loc = nn.Sequential(
+                #     MLP(hidden_dim, hidden_dim * 4, output_dim=hidden_dim, num_layers=3),
+                #     nn.Linear(hidden_dim, 2),
+                # )
+                self._pred_loc = TransformerArch(
+                    in_dim=hidden_dim,
+                    hidden_dim=128,
+                    out_dim=2,
+                    nhead=4, num_layers=2
                 )
 
         def forward(self, x):
