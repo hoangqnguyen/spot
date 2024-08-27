@@ -145,3 +145,54 @@ class MLP(nn.Module):
         for i, layer in enumerate(self.layers):
             x = F.relu(layer(x)) if i < self.num_layers - 1 else layer(x)
         return x
+    
+
+class ImprovedLocationPredictor(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim=2):
+        super(ImprovedLocationPredictor, self).__init__()
+        # Initial Layer
+        self.initial_layer = nn.Linear(input_dim, hidden_dim)
+        
+        # Residual Block 1
+        self.res_block1 = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim * 2),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim * 2, hidden_dim)
+        )
+        self.batch_norm1 = nn.BatchNorm1d(hidden_dim)  # Batch normalization after first block
+        
+        # Residual Block 2
+        self.res_block2 = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim * 2),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim * 2, hidden_dim)
+        )
+        self.batch_norm2 = nn.BatchNorm1d(hidden_dim)  # Batch normalization after second block
+
+        # Final Layers
+        self.dropout = nn.Dropout(0.3)  # Dropout for regularization
+        self.output_layer = nn.Linear(hidden_dim, output_dim)  # Final output layer without batch normalization
+
+    def forward(self, x):
+        # Initial layer
+        if x.dim() == 3:
+            x = x.flatten(0,1)
+        x = self.initial_layer(x)
+        
+        # Residual Block 1 with skip connection
+        residual = x
+        x = self.res_block1(x)
+        x = self.batch_norm1(x)
+        x = x + residual  # Add skip connection
+
+        # Residual Block 2 with skip connection
+        residual = x
+        x = self.res_block2(x)
+        x = self.batch_norm2(x)
+        x = x + residual  # Add skip connection
+
+        # Dropout and Final Output
+        x = self.dropout(x)
+        x = self.output_layer(x)  # Final output without batch normalization
+        
+        return x

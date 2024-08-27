@@ -29,20 +29,14 @@ from util.eval import (
 from util.io import load_json, store_json, store_gz_json, clear_files
 from util.dataset import DATASETS, load_classes
 from util.score import compute_mAPs
-from util.det import (
-    convert_target_to_prediction_shape,
-    convert_prediction_to_target_shape,
-)
 from torchvision.ops.focal_loss import sigmoid_focal_loss
 
 
 EPOCH_NUM_FRAMES = 500000
-# EPOCH_NUM_FRAMES = 500
 
 BASE_NUM_WORKERS = 4
 
 BASE_NUM_VAL_EPOCHS = 20
-# BASE_NUM_VAL_EPOCHS = 2
 
 INFERENCE_BATCH_SIZE = 4
 
@@ -146,6 +140,7 @@ def get_args():
         action="store_true",
         help="add MSE loss term to the training loss",
     )
+    parser.add_argument("--debug_only", action="store_true", help="As the name suggests")
 
     # Eval mode
     parser.add_argument("--eval_only", action="store_true", help="As the name suggests")
@@ -314,10 +309,12 @@ class E2EModel(BaseRGBModel):
 
             self._predict_location = predict_location
             if self._predict_location:
-                self._pred_loc = nn.Sequential(
-                    MLP(hidden_dim, hidden_dim * 4, output_dim=hidden_dim, num_layers=3),
-                    nn.Linear(hidden_dim, 2),
-                )
+                # self._pred_loc = nn.Sequential(
+                #     MLP(hidden_dim, hidden_dim * 4, output_dim=hidden_dim, num_layers=3),
+                #     nn.Linear(hidden_dim, 2),
+                # )
+                from model.common import ImprovedLocationPredictor
+                self._pred_loc =ImprovedLocationPredictor(input_dim=hidden_dim, hidden_dim=256, output_dim=2)
 
         def forward(self, x):
             batch_size, true_clip_len, channels, height, width = x.shape
@@ -353,7 +350,9 @@ class E2EModel(BaseRGBModel):
             print(
                 f"CNN features:{sum(p.numel() for p in self._features.parameters()):,}"
             )
-            print(f"Temporal:{sum(p.numel() for p in self._pred_fine.parameters()):,}")
+            print(f"Temporal Head:{sum(p.numel() for p in self._pred_fine.parameters()):,}")
+            if hasattr(self, "_pred_loc"):
+                print(f"Spatial Head:{sum(p.numel() for p in self._pred_loc.parameters()):,}")
 
     def __init__(
         self,
@@ -954,6 +953,14 @@ def get_lr_scheduler(args, optimizer, num_steps_per_epoch):
 
 
 def main(args):
+    if args.debug_only:      
+        global EPOCH_NUM_FRAMES
+        EPOCH_NUM_FRAMES = 500
+
+        global BASE_NUM_VAL_EPOCHS
+        BASE_NUM_VAL_EPOCHS = 2
+
+
     if args.num_workers is not None:
         global BASE_NUM_WORKERS
         BASE_NUM_WORKERS = args.num_workers
