@@ -318,6 +318,7 @@ class E2EModel(BaseRGBModel):
 
         def forward(self, x):
             batch_size, true_clip_len, channels, height, width = x.shape
+            # print(x.shape)
 
             clip_len = true_clip_len
             if self._require_clip_len > 0:

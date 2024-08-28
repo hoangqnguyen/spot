@@ -169,16 +169,18 @@ def _get_img_transforms(
 ):
     crop_transform = None
     if crop_dim is not None:
-        if multi_crop:
-            assert is_eval
-            crop_transform = ThreeCrop(crop_dim)
-        elif is_eval:
-            crop_transform = transforms.CenterCrop(crop_dim)
-        elif same_transform:
-            print('=> Using seeded crops!')
-            crop_transform = SeedableRandomSquareCrop(crop_dim)
-        else:
-            crop_transform = transforms.RandomCrop(crop_dim)
+        crop_transform = transforms.Resize((crop_dim, crop_dim))
+        # print('=> Using resize to {}!'.format(crop_dim))
+        # if multi_crop:
+        #     assert is_eval
+        #     crop_transform = ThreeCrop(crop_dim)
+        # elif is_eval:
+        #     crop_transform = transforms.CenterCrop(crop_dim)
+        # elif same_transform:
+        #     print('=> Using seeded crops!')
+        #     crop_transform = SeedableRandomSquareCrop(crop_dim)
+        # else:
+        #     crop_transform = transforms.RandomCrop(crop_dim)
 
     img_transforms = []
     if modality == 'rgb':
