@@ -464,10 +464,15 @@ class ActionSpotVideoDataset(Dataset):
             pad_len=DEFAULT_PAD_LEN,
             flip=False,
             multi_crop=False,
-            skip_partial_end=True
+            skip_partial_end=True,
+            num_videos=None,
     ):
         self._src_file = label_file
         self._labels = load_json(label_file)
+
+        if isinstance(num_videos, int) and num_videos > 0:
+            self._labels = self._labels[:num_videos]
+
         self._class_dict = classes
         self._video_idxs = {x['video']: i for i, x in enumerate(self._labels)}
         self._clip_len = clip_len

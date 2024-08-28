@@ -28,7 +28,7 @@ from util.eval import (
 )
 from util.io import load_json, store_json, store_gz_json, clear_files
 from util.dataset import DATASETS, load_classes
-from util.score import compute_mAPs
+from util.score import compute_mAPs, compute_mAPs_with_locations
 from torchvision.ops.focal_loss import sigmoid_focal_loss
 
 
@@ -118,7 +118,7 @@ def get_args():
         "--predict_location", action="store_true", help="As the name suggests"
     )
 
-    parser.add_argument("--start_val_epoch", type=int)
+    parser.add_argument("--start_val_epoch", type=int, default=30)
     parser.add_argument("--criterion", choices=["map", "loss"], default="map")
 
     parser.add_argument(
@@ -512,117 +512,6 @@ class E2EModel(BaseRGBModel):
             else:
                 return pred_cls, pred_cls_score
 
-
-def evaluate_old(
-    model,
-    dataset,
-    split,
-    classes,
-    save_pred,
-    calc_stats=True,
-    save_scores=True,
-    predict_location=False,
-):
-    # TODO: Add eval for spatial predictions
-    pred_dict = {}
-    for video, video_len, _ in dataset.videos:
-        pred_dict[video] = (
-            np.zeros((video_len, len(classes) + 1), np.float32),
-            np.zeros(video_len, np.int32),
-        )
-
-    # Do not up the batch size if the dataset augments
-    batch_size = 1 if dataset.augment else INFERENCE_BATCH_SIZE
-
-    for clip in tqdm(
-        DataLoader(
-            dataset,
-            num_workers=BASE_NUM_WORKERS * 2,
-            pin_memory=True,
-            batch_size=batch_size,
-        )
-    ):
-        if batch_size > 1:
-            # Batched by dataloader
-            if predict_location:
-                _, batch_pred_scores, batch_pred_loc = model.predict(clip["frame"])
-            else:
-                _, batch_pred_scores = model.predict(clip["frame"])
-
-            for i in range(clip["frame"].shape[0]):
-                video = clip["video"][i]
-                scores, support = pred_dict[video]
-
-                pred_scores = batch_pred_scores[i]
-                pred_loc = batch_pred_loc[i]
-
-                start = clip["start"][i].item()
-                if start < 0:
-                    pred_scores = pred_scores[-start:, :]
-                    start = 0
-                end = start + pred_scores.shape[0]
-                if end >= scores.shape[0]:
-                    end = scores.shape[0]
-                    pred_scores = pred_scores[: end - start, :]
-                scores[start:end, :] += pred_scores
-                support[start:end] += 1
-
-        else:
-            # Batched by dataset
-
-            scores, support = pred_dict[clip["video"][0]]
-
-            start = clip["start"][0].item()
-            if predict_location:
-                _, pred_scores, pred_loc = model.predict(clip["frame"][0])
-            else:
-                _, pred_scores = model.predict(clip["frame"][0])
-
-            if start < 0:
-                pred_scores = pred_scores[:, -start:, :]
-                start = 0
-            end = start + pred_scores.shape[1]
-            if end >= scores.shape[0]:
-                end = scores.shape[0]
-                pred_scores = pred_scores[:, : end - start, :]
-
-            scores[start:end, :] += np.sum(pred_scores, axis=0)
-            support[start:end] += pred_scores.shape[0]
-
-    err, f1, pred_events, pred_events_high_recall, pred_scores = (
-        process_frame_predictions(dataset, classes, pred_dict)
-    )
-
-    avg_mAP = None
-    if calc_stats:
-        print("=== Results on {} (w/o NMS) ===".format(split))
-        print("Error (frame-level): {:0.2f}\n".format(err.get() * 100))
-
-        def get_f1_tab_row(str_k):
-            k = classes[str_k] if str_k != "any" else None
-            return [str_k, f1.get(k) * 100, *f1.tp_fp_fn(k)]
-
-        rows = [get_f1_tab_row("any")]
-        for c in sorted(classes):
-            rows.append(get_f1_tab_row(c))
-        print(
-            tabulate(
-                rows, headers=["Exact frame", "F1", "TP", "FP", "FN"], floatfmt="0.2f"
-            )
-        )
-        print()
-
-        mAPs, _ = compute_mAPs(dataset.labels, pred_events_high_recall)
-        avg_mAP = np.mean(mAPs[1:])
-
-    if save_pred is not None:
-        store_json(save_pred + ".json", pred_events)
-        store_gz_json(save_pred + ".recall.json.gz", pred_events_high_recall)
-        if save_scores:
-            store_gz_json(save_pred + ".score.json.gz", pred_scores)
-    return avg_mAP
-
-
 def evaluate(
     model,
     dataset,
@@ -664,9 +553,8 @@ def evaluate(
             # When batch size is greater than 1 (batched by dataloader)
             if predict_location:
                 # Predict scores and locations if location prediction is enabled
-                _, batch_pred_scores, batch_pred_loc = model.predict(
-                    clip["frame"], presence_threshold=presence_threshold
-                )
+                _, batch_pred_scores, batch_pred_loc = model.predict( clip["frame"], presence_threshold=presence_threshold)
+                batch_pred_loc = batch_pred_loc.reshape(batch_pred_scores.shape[0], -1, 2)
             else:
                 # Predict only scores if location prediction is not enabled
                 _, batch_pred_scores = model.predict(clip["frame"])
@@ -679,6 +567,7 @@ def evaluate(
                     i
                 ]  # Predicted scores for the current batch
                 if predict_location:
+                    # breakpoint()
                     pred_loc = batch_pred_loc[
                         i
                     ]  # Predicted locations for the current batch
@@ -697,13 +586,17 @@ def evaluate(
                     pred_scores = pred_scores[: end - start, :]
                     if predict_location:
                         pred_loc = pred_loc[: end - start, :]
-                        # pred_loc = pred_loc[-start:, :]
                 scores[start:end, :] += pred_scores  # Accumulate scores
                 support[
                     start:end
                 ] += 1  # Increment the support count because the frame is present
                 if predict_location:
-                    locations[start:end, :] = pred_loc
+                    # breakpoint()
+                    try:
+                        locations[start:end, :] = pred_loc
+                    except:
+                        pass
+                        # breakpoint()
 
         else:
             # When batch size is 1 (batched by dataset)
@@ -744,11 +637,11 @@ def evaluate(
     #     for threshold in pixel_thresholds_for_positives:
 
     # Process the frame-level predictions (class)
-    err, f1, pred_events, pred_events_high_recall, pred_scores, location_errs = (
+    err, f1, pred_events, pred_events_high_recall, pred_scores = (
         process_frame_predictions_with_location(dataset, classes, pred_dict)
     )
 
-    avg_mAP = None
+    avg_mAP_t = None
     if calc_stats:
         # Print the evaluation results
         print("=== Results on {} (w/o NMS) ===".format(split))
@@ -769,23 +662,12 @@ def evaluate(
         print()
 
         # Calculate mean average precision (mAP)
-        mAPs, _ = compute_mAPs(dataset.labels, pred_events_high_recall)
-        avg_mAP = np.mean(mAPs[1:])
-
-        if predict_location:
-            px_thresholds = np.arange(0, 11)[None, :]  # 0 to 10, shape = (10, 1)
-            corrects = (
-                location_errs[:, None] * scale_location <= px_thresholds
-            )  # shape = (N, 10)
-            accuracies = corrects.mean(axis=0)  # shape = (10,)
-            # breakpoint()
-            print("Location accuracies (pixel):")
-            print(
-                tabulate(
-                    accuracies.reshape(1, -1).tolist(),
-                    headers=list(map(str, px_thresholds[0].tolist())),
-                )
-            )
+        # mAPs, _ = compute_mAPs(dataset.labels, pred_events_high_recall)
+        mAPs_t, mAPs_p = compute_mAPs_with_locations(dataset.labels, pred_events_high_recall)
+        avg_mAP_t = np.mean(mAPs_t[1:])
+        avg_mAP_s = np.mean(mAPs_p[1:])
+        # hamornic mean
+        avg_mAP = 2 * avg_mAP_t * avg_mAP_s / (avg_mAP_t + avg_mAP_s)
 
     if save_pred is not None:
         os.makedirs(os.path.dirname(save_pred), exist_ok=True)
@@ -795,6 +677,8 @@ def evaluate(
         if save_scores:
             store_gz_json(save_pred + ".score.json.gz", pred_scores)
 
+    print("=" * 50)
+    print("Harmonic mean between temporal and spatial mAPs: {:0.2%}".format(avg_mAP))
     return avg_mAP  # Return the average mean average precision (mAP)
 
 
@@ -1139,6 +1023,7 @@ def main(args):
                 args.clip_len,
                 overlap_len=args.clip_len // 2,
                 crop_dim=args.crop_dim,
+                num_videos=2 if args.debug_only else None,
             )
             split_data.print_info()
 

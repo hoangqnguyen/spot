@@ -128,21 +128,22 @@ def process_frame_predictions_with_location(
     pred_events = []
     pred_events_high_recall = []
     pred_scores = {}
-    location_errs = np.empty((0,))
+    # location_errs = np.empty((0,))
 
     for video, (scores, support, locations_pred) in sorted(pred_dict.items()):
         label, location_gt = dataset.get_labels(video, with_locations=True)
         # support[support == 0] = 1   # get rid of divide by zero
         assert np.min(support) > 0, (video, support.tolist())
         scores /= support[:, None]
+        # locations_pred /= support[:, None]
         pred = np.argmax(scores, axis=1)
 
         err.update(label, pred)
 
-        loc_err = np.linalg.norm(locations_pred - location_gt, axis=1)[label != 0]
+        # loc_err = np.linalg.norm(locations_pred - location_gt, axis=1)[label != 0]
         # breakpoint()
 
-        location_errs = np.concatenate((location_errs, loc_err))
+        # location_errs = np.concatenate((location_errs, loc_err))
 
         pred_scores[video] = scores.tolist()
 
@@ -175,7 +176,7 @@ def process_frame_predictions_with_location(
             'video': video, 'events': events_high_recall,
             'fps': fps_dict[video]})
 
-    return err, f1, pred_events, pred_events_high_recall, pred_scores, location_errs
+    return err, f1, pred_events, pred_events_high_recall, pred_scores
 
 
 def non_maximum_supression(pred, window):
