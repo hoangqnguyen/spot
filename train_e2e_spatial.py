@@ -140,7 +140,9 @@ def get_args():
         action="store_true",
         help="add MSE loss term to the training loss",
     )
-    parser.add_argument("--debug_only", action="store_true", help="As the name suggests")
+    parser.add_argument(
+        "--debug_only", action="store_true", help="As the name suggests"
+    )
 
     # Eval mode
     parser.add_argument("--eval_only", action="store_true", help="As the name suggests")
@@ -314,7 +316,10 @@ class E2EModel(BaseRGBModel):
                 #     nn.Linear(hidden_dim, 2),
                 # )
                 from model.common import ImprovedLocationPredictor
-                self._pred_loc =ImprovedLocationPredictor(input_dim=hidden_dim, hidden_dim=256, output_dim=2)
+
+                self._pred_loc = ImprovedLocationPredictor(
+                    input_dim=hidden_dim, hidden_dim=256, output_dim=2
+                )
 
         def forward(self, x):
             batch_size, true_clip_len, channels, height, width = x.shape
@@ -351,9 +356,13 @@ class E2EModel(BaseRGBModel):
             print(
                 f"CNN features:{sum(p.numel() for p in self._features.parameters()):,}"
             )
-            print(f"Temporal Head:{sum(p.numel() for p in self._pred_fine.parameters()):,}")
+            print(
+                f"Temporal Head:{sum(p.numel() for p in self._pred_fine.parameters()):,}"
+            )
             if hasattr(self, "_pred_loc"):
-                print(f"Spatial Head:{sum(p.numel() for p in self._pred_loc.parameters()):,}")
+                print(
+                    f"Spatial Head:{sum(p.numel() for p in self._pred_loc.parameters()):,}"
+                )
 
     def __init__(
         self,
@@ -411,11 +420,12 @@ class E2EModel(BaseRGBModel):
         with torch.no_grad() if optimizer is None else nullcontext():
             pbar = tqdm(loader)
             for batch_idx, batch in enumerate(pbar):
-                frame = loader.dataset.load_frame_gpu(batch, self.device)
+                # frame = loader.dataset.load_frame_gpu(batch, self.device)
+                frame = batch["frame"].to(self.device)
                 label = batch["label"].to(self.device)
 
                 if self._model._predict_location:
-                    target_xy = batch["xy"].to(self.device).reshape(-1, 2) # B*T, 2
+                    target_xy = batch["xy"].to(self.device).reshape(-1, 2)  # B*T, 2
 
                 # Depends on whether mixup is used
                 label = (
@@ -443,9 +453,9 @@ class E2EModel(BaseRGBModel):
                     if self._model._predict_location:
                         # Assume the objectness score is the first element in loc[i], and the rest are x and y coordinates.
                         # breakpoint()
-                        pred_loc = loc.reshape(-1, 2) # B*T, 2
+                        pred_loc = loc.reshape(-1, 2)  # B*T, 2
 
-                        event_mask = (label != 0).float().reshape(-1) # B*T
+                        event_mask = (label != 0).float().reshape(-1)  # B*T
 
                         # Apply the standard L1 loss to the masked x and y coordinates
                         xy_loss = F.l1_loss(
@@ -485,7 +495,7 @@ class E2EModel(BaseRGBModel):
             "loc": epoch_loss_loc / len(loader),
         }
 
-    def predict(self, seq, use_amp=True, presence_threshold=0.):
+    def predict(self, seq, use_amp=True, presence_threshold=0.0):
         if not isinstance(seq, torch.Tensor):
             seq = torch.FloatTensor(seq)
         if len(seq.shape) == 4:  # (L, C, H, W)
@@ -503,15 +513,12 @@ class E2EModel(BaseRGBModel):
             pred_cls = torch.argmax(pred_dict["im_feat"], axis=2).cpu().numpy()
             if self._model._predict_location:
                 pred_loc = (
-                    pred_dict["loc_feat"]
-                    .detach()
-                    .sigmoid()
-                    .cpu()
-                    .numpy()
+                    pred_dict["loc_feat"].detach().sigmoid().cpu().numpy()
                 )  # B, T, 2
                 return pred_cls, pred_cls_score, pred_loc
             else:
                 return pred_cls, pred_cls_score
+
 
 def evaluate(
     model,
@@ -554,8 +561,12 @@ def evaluate(
             # When batch size is greater than 1 (batched by dataloader)
             if predict_location:
                 # Predict scores and locations if location prediction is enabled
-                _, batch_pred_scores, batch_pred_loc = model.predict( clip["frame"], presence_threshold=presence_threshold)
-                batch_pred_loc = batch_pred_loc.reshape(batch_pred_scores.shape[0], -1, 2)
+                _, batch_pred_scores, batch_pred_loc = model.predict(
+                    clip["frame"], presence_threshold=presence_threshold
+                )
+                batch_pred_loc = batch_pred_loc.reshape(
+                    batch_pred_scores.shape[0], -1, 2
+                )
             else:
                 # Predict only scores if location prediction is not enabled
                 _, batch_pred_scores = model.predict(clip["frame"])
@@ -664,7 +675,9 @@ def evaluate(
 
         # Calculate mean average precision (mAP)
         # mAPs, _ = compute_mAPs(dataset.labels, pred_events_high_recall)
-        mAPs_t, mAPs_p = compute_mAPs_with_locations(dataset.labels, pred_events_high_recall)
+        mAPs_t, mAPs_p = compute_mAPs_with_locations(
+            dataset.labels, pred_events_high_recall
+        )
         avg_mAP_t = np.mean(mAPs_t[1:])
         avg_mAP_s = np.mean(mAPs_p[1:])
         # hamornic mean
@@ -757,7 +770,6 @@ def get_datasets(args):
         )
         val_data.print_info()
         return classes, train_data, val_data, val_data_frames
-    
 
     return classes, val_data_frames
 
@@ -838,13 +850,12 @@ def get_lr_scheduler(args, optimizer, num_steps_per_epoch):
 
 
 def main(args):
-    if args.debug_only:      
+    if args.debug_only:
         global EPOCH_NUM_FRAMES
         EPOCH_NUM_FRAMES = 500
 
         global BASE_NUM_VAL_EPOCHS
         BASE_NUM_VAL_EPOCHS = 2
-
 
     if args.num_workers is not None:
         global BASE_NUM_WORKERS
@@ -1022,6 +1033,7 @@ def main(args):
                 args.frame_dir,
                 args.modality,
                 args.clip_len,
+                is_eval=True,
                 overlap_len=args.clip_len // 2,
                 crop_dim=args.crop_dim,
                 num_videos=2 if args.debug_only else None,
