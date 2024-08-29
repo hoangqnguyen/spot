@@ -178,21 +178,44 @@ class ImprovedLocationPredictor(nn.Module):
         if x.dim() == 3:
             x = x.flatten(0,1)
         x = self.initial_layer(x)
+        # check if an element of x is nan
+        print("x min max", x.min(), x.max())    
         
         # Residual Block 1 with skip connection
         residual = x
         x = self.res_block1(x)
+        if torch.isnan(x).any():
+            print("x min max", x.min(), x.max())    
+            raise Exception("nan in x after res_block1")
         x = self.batch_norm1(x)
+        if torch.isnan(x).any():
+            print("x min max", x.min(), x.max())    
+            # print bn parameters
+            print(self.batch_norm1)
+            raise Exception("nan in x after res_block1 bn" )
         x = x + residual  # Add skip connection
+        # check if an element of x is nan
+        if torch.isnan(x).any():
+            print("x min max", x.min(), x.max())    
+            raise Exception("nan in x after res_block1 res+" )
 
         # Residual Block 2 with skip connection
         residual = x
         x = self.res_block2(x)
         x = self.batch_norm2(x)
         x = x + residual  # Add skip connection
+        # check if an element of x is nan
+        if torch.isnan(x).any():
+            raise Exception("nan in x after res_block2")
+            print(x)
+
 
         # Dropout and Final Output
         x = self.dropout(x)
+        # check if an element of x is nan
+        if torch.isnan(x).any():
+            raise Exception("nan in x after dropout")
+            print(x)
         x = self.output_layer(x)  # Final output without batch normalization
         
         return x

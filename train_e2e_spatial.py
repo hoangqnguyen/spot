@@ -311,15 +311,15 @@ class E2EModel(BaseRGBModel):
 
             self._predict_location = predict_location
             if self._predict_location:
-                # self._pred_loc = nn.Sequential(
-                #     MLP(hidden_dim, hidden_dim * 4, output_dim=hidden_dim, num_layers=3),
-                #     nn.Linear(hidden_dim, 2),
-                # )
-                from model.common import ImprovedLocationPredictor
-
-                self._pred_loc = ImprovedLocationPredictor(
-                    input_dim=hidden_dim, hidden_dim=256, output_dim=2
+                self._pred_loc = nn.Sequential(
+                    MLP(hidden_dim, hidden_dim * 4, output_dim=hidden_dim, num_layers=3),
+                    nn.Linear(hidden_dim, 2),
                 )
+                # from model.common import ImprovedLocationPredictor
+
+                # self._pred_loc = ImprovedLocationPredictor(
+                #     input_dim=hidden_dim, hidden_dim=256, output_dim=2
+                # )
 
         def forward(self, x):
             batch_size, true_clip_len, channels, height, width = x.shape
