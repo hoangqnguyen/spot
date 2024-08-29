@@ -347,8 +347,6 @@ class E2EModel(BaseRGBModel):
             if self._predict_location:
                 loc_feat = self._pred_loc(im_feat)
 
-            # breakpoint()
-
             return {"im_feat": self._pred_fine(im_feat), "loc_feat": loc_feat}
 
         def print_stats(self):
@@ -452,7 +450,6 @@ class E2EModel(BaseRGBModel):
 
                     if self._model._predict_location:
                         # Assume the objectness score is the first element in loc[i], and the rest are x and y coordinates.
-                        # breakpoint()
                         pred_loc = loc.reshape(-1, 2)  # B*T, 2
 
                         event_mask = (label != 0).float().reshape(-1)  # B*T
@@ -495,15 +492,13 @@ class E2EModel(BaseRGBModel):
             "loc": epoch_loss_loc / len(loader),
         }
 
-    def predict(self, seq, use_amp=True, presence_threshold=0.0):
+    def predict(self, seq, use_amp=False, presence_threshold=0.0):
         if not isinstance(seq, torch.Tensor):
             seq = torch.FloatTensor(seq)
         if len(seq.shape) == 4:  # (L, C, H, W)
             seq = seq.unsqueeze(0)
         if seq.device != self.device:
             seq = seq.to(self.device)
-
-        B, T = seq.shape[:2]
 
         self._model.eval()
         with torch.no_grad():
@@ -512,9 +507,7 @@ class E2EModel(BaseRGBModel):
             pred_cls_score = torch.softmax(pred_dict["im_feat"], axis=2).cpu().numpy()
             pred_cls = torch.argmax(pred_dict["im_feat"], axis=2).cpu().numpy()
             if self._model._predict_location:
-                pred_loc = (
-                    pred_dict["loc_feat"].detach().sigmoid().cpu().numpy()
-                )  # B, T, 2
+                pred_loc = pred_dict["loc_feat"].reshape(seq.shape[0], -1, 2).sigmoid().cpu().numpy()  # B, T, 2
                 return pred_cls, pred_cls_score, pred_loc
             else:
                 return pred_cls, pred_cls_score
@@ -529,7 +522,6 @@ def evaluate(
     calc_stats=True,
     save_scores=True,
     predict_location=False,
-    presence_threshold=0.5,
     scale_location=224,
 ):
     # Initialize the prediction dictionary and location errors list
@@ -547,7 +539,7 @@ def evaluate(
 
     # Determine batch size based on whether the dataset is augmented
     batch_size = 1 if dataset.augment else INFERENCE_BATCH_SIZE
-
+    idx = 0
     # Iterate over the dataset using DataLoader
     for clip in tqdm(
         DataLoader(
@@ -561,9 +553,8 @@ def evaluate(
             # When batch size is greater than 1 (batched by dataloader)
             if predict_location:
                 # Predict scores and locations if location prediction is enabled
-                _, batch_pred_scores, batch_pred_loc = model.predict(
-                    clip["frame"], presence_threshold=presence_threshold
-                )
+                _, batch_pred_scores, batch_pred_loc = model.predict(clip["frame"])
+                
                 batch_pred_loc = batch_pred_loc.reshape(
                     batch_pred_scores.shape[0], -1, 2
                 )
@@ -579,7 +570,6 @@ def evaluate(
                     i
                 ]  # Predicted scores for the current batch
                 if predict_location:
-                    # breakpoint()
                     pred_loc = batch_pred_loc[
                         i
                     ]  # Predicted locations for the current batch
@@ -603,12 +593,8 @@ def evaluate(
                     start:end
                 ] += 1  # Increment the support count because the frame is present
                 if predict_location:
-                    # breakpoint()
-                    try:
-                        locations[start:end, :] = pred_loc
-                    except:
-                        pass
-                        # breakpoint()
+                    # fg_mask = np.argmax(pred_scores, axis=-1) > 0
+                    locations[start:end, :] = pred_loc
 
         else:
             # When batch size is 1 (batched by dataset)
@@ -617,9 +603,7 @@ def evaluate(
             start = clip["start"][0].item()
             if predict_location:
                 # Predict scores and locations if location prediction is enabled
-                _, pred_scores, pred_loc = model.predict(
-                    clip["frame"][0], presence_threshold=presence_threshold
-                )
+                _, pred_scores, pred_loc = model.predict(clip["frame"][0])
             else:
                 # Predict only scores if location predictiobn is not enabled
                 _, pred_scores = model.predict(clip["frame"][0])
@@ -641,18 +625,15 @@ def evaluate(
             scores[start:end, :] += np.sum(pred_scores, axis=0)  # Accumulate scores
             support[start:end] += pred_scores.shape[0]  # Increment the support count
             if predict_location:
+                # fg_mask = np.argmax(pred_scores, axis=-1) > 0
                 locations[start:end, :] = pred_loc
-
-    # breakpoint()
-    # if predict_location:
-    #     pixel_thresholds_for_positives = np.arange(0, 11) # 0 to 10
-    #     for threshold in pixel_thresholds_for_positives:
 
     # Process the frame-level predictions (class)
     err, f1, pred_events, pred_events_high_recall, pred_scores = (
         process_frame_predictions_with_location(dataset, classes, pred_dict)
     )
 
+    # breakpoint()
     avg_mAP_t = None
     if calc_stats:
         # Print the evaluation results
@@ -679,9 +660,9 @@ def evaluate(
             dataset.labels, pred_events_high_recall
         )
         avg_mAP_t = np.mean(mAPs_t[1:])
-        avg_mAP_s = np.mean(mAPs_p[1:])
+        avg_mAP_s = np.mean(mAPs_p)
         # hamornic mean
-        avg_mAP = 2 * avg_mAP_t * avg_mAP_s / (avg_mAP_t + avg_mAP_s)
+        avg_mAP = 2 * avg_mAP_t * avg_mAP_s / (avg_mAP_t + avg_mAP_s + 1e-6)
 
     if save_pred is not None:
         os.makedirs(os.path.dirname(save_pred), exist_ok=True)
@@ -738,8 +719,10 @@ def get_datasets(args):
             args.frame_dir,
             args.modality,
             args.clip_len,
+            is_eval=True,
             crop_dim=args.crop_dim,
             overlap_len=0,
+            num_videos=2 if args.debug_only else None,
         )
 
     if args.fg_upsample is not None:
@@ -766,6 +749,7 @@ def get_datasets(args):
             args.modality,
             args.clip_len,
             dataset_len // 4,
+            is_eval=True,
             **dataset_kwargs,
         )
         val_data.print_info()
@@ -915,7 +899,7 @@ def main(args):
 
         losses = []
         best_epoch = None
-        best_criterion = 0 if args.criterion == "map" else float("inf")
+        best_criterion = -0.1 if args.criterion == "map" else float("inf")
 
         epoch = 0
         if args.resume:
@@ -1034,7 +1018,8 @@ def main(args):
                 args.modality,
                 args.clip_len,
                 is_eval=True,
-                overlap_len=args.clip_len // 2,
+                # overlap_len=args.clip_len // 2,
+                overlap_len=0,
                 crop_dim=args.crop_dim,
                 num_videos=2 if args.debug_only else None,
             )

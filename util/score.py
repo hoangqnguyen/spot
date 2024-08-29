@@ -236,6 +236,8 @@ def compute_mAPs_with_locations(
 
     truth_by_label = parse_ground_truth(truth)
 
+    # breakpoint()
+
     fig, axes = None, None
     if plot_pr:
         fig, axes = plt.subplots(

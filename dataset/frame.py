@@ -254,15 +254,13 @@ class ActionSpotDataset(Dataset):
             in_boxes = torch.from_numpy(event_xys) * scale  # T, 2
             in_boxes = in_boxes.repeat((1, 2))  # T, 4
 
-            # print(f"frames.shape: {frames.shape}, in_boxes.shape: {in_boxes.shape}, event_xys.shape: {event_xys.shape}")
             in_boxes = tv_tensors.BoundingBoxes(
                 in_boxes, format="XYXY", canvas_size=frames.shape[-2:]
             )
 
             frames, out_boxes = self._transform(frames, in_boxes)
             # event_xys = torch.tensor(out_boxes[:, :2] / scale)
-            event_xys = out_boxes.data[:, :2] / scale
-            # print(f"frames.shape: {frames.shape}, event_xys.shape: {event_xys.shape}")
+            event_xys = out_boxes.data[:, :2] / torch.tensor([self._crop_dim, self._crop_dim]).reshape(1, 2)
 
         return {
             "frame": frames,
