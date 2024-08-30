@@ -100,9 +100,17 @@ def compute_average_precision_with_locations(
     plot_ax=None,
     plot_label=None,
     plot_raw_pr=True,
-    scale_xy=224,
 ):
-    truth = {key: values_list for sub_dict in truth.values() for key, values_list in sub_dict.items()}
+    # breakpoint()
+
+    # extract all events from truth:
+
+    extracted_data = defaultdict(list)
+    for event_class in truth.values():
+        for video, events in event_class.items():
+            extracted_data[video].extend(events)
+    
+    truth = extracted_data
 
     total = sum([len(x) for x in truth.values()])
     recalled = set()
@@ -111,6 +119,9 @@ def compute_average_precision_with_locations(
     # by in increments of ones
     pc = []
     _prev_score = 1
+
+    # breakpoint()
+
     for i, (video, frame, score, pred_xy) in enumerate(pred, 1):
         assert score <= _prev_score
         _prev_score = score
@@ -130,8 +141,7 @@ def compute_average_precision_with_locations(
         if (
             gt_closest is not None
             and abs(frame - gt_closest) <= tolerance_t
-            and np.linalg.norm(np.subtract(pred_xy, gt_closest_xy)) * scale_xy
-            <= tolerance_p
+            and np.linalg.norm(np.subtract(pred_xy, gt_closest_xy)) <= tolerance_p
         ):
             recalled.add((video, gt_closest))
             p = len(recalled) / i
@@ -223,13 +233,73 @@ def compute_mAPs(truth, pred, tolerances=list(range(6)), plot_pr=False):
     return mAPs, tolerances
 
 
+def filter_events_by_score(data, fg_threshold):
+    filtered_data = []
+    for video in data:
+        filtered_events = [event for event in video["events"] if event["score"] >= fg_threshold]
+        filtered_video = {
+            "video": video["video"],
+            "events": filtered_events,
+            "fps": video["fps"]
+        }
+        filtered_data.append(filtered_video)
+    return filtered_data
+
+def scale_xy(data, px_scale):
+    for video in data:
+        for event in video["events"]:
+            event["xy"] = [int(coord * px_scale) for coord in event["xy"]]
+    return data
+
+def non_max_suppression_events(data, tol_t):
+    def suppress_events(events, tol_t):
+        events.sort(key=lambda x: x["frame"])
+        suppressed_events = []
+        i = 0
+        while i < len(events):
+            current_event = events[i]
+            j = i + 1
+            while j < len(events) and events[j]["frame"] - current_event["frame"] <= tol_t:
+                if events[j]["score"] > current_event["score"]:
+                    current_event = events[j]
+                j += 1
+            suppressed_events.append(current_event)
+            i = j
+        return suppressed_events
+
+    for video in data:
+        events_by_label = {}
+        for event in video["events"]:
+            label = event["label"]
+            if label not in events_by_label:
+                events_by_label[label] = []
+            events_by_label[label].append(event)
+        
+        suppressed_events = []
+        for label, events in events_by_label.items():
+            suppressed_events.extend(suppress_events(events, tol_t))
+        
+        video["events"] = suppressed_events
+    
+    return data
+
 def compute_mAPs_with_locations(
     truth,
     pred,
-    tolerances_t=list(range(6)),
-    tolerances_p=list(range(0, 21, 2)),
+    tolerances_t=list(range(0, 6, 1)),
+    tolerances_p=list(range(0, 11, 2)),
     plot_pr=False,
+    fg_threshold=0.25,
+    px_scale=224,
 ):
+    # post processing
+    pred = filter_events_by_score(pred, fg_threshold) # Filter out low confidence predictions
+    pred = scale_xy(pred, px_scale) 
+    pred = non_max_suppression_events(pred, 3) # Suppress events within 3 frame
+    truth = scale_xy(truth, px_scale) 
+
+    # breakpoint()
+
     assert {v["video"] for v in truth} == {
         v["video"] for v in pred
     }, "Video set mismatch!"
@@ -272,6 +342,8 @@ def compute_mAPs_with_locations(
         class_aps.append(("mAP", mAP_t))
         class_aps_for_tol.append(class_aps)
 
+
+        # breakpoint()
         # ==> Spatial
         location_aps = [(tol_p, compute_average_precision_with_locations(
             get_predictions(pred, label=None),

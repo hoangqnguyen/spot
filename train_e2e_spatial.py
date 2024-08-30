@@ -522,7 +522,7 @@ def evaluate(
     calc_stats=True,
     save_scores=True,
     predict_location=False,
-    scale_location=224,
+    px_scale=224,
 ):
     # Initialize the prediction dictionary and location errors list
     pred_dict = {}
@@ -657,7 +657,7 @@ def evaluate(
         # Calculate mean average precision (mAP)
         # mAPs, _ = compute_mAPs(dataset.labels, pred_events_high_recall)
         mAPs_t, mAPs_p = compute_mAPs_with_locations(
-            dataset.labels, pred_events_high_recall
+            dataset.labels, pred_events_high_recall, px_scale=px_scale
         )
         avg_mAP_t = np.mean(mAPs_t[1:])
         avg_mAP_s = np.mean(mAPs_p)
