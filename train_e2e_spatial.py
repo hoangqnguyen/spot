@@ -433,7 +433,7 @@ class E2EModel(BaseRGBModel):
                     else label.view(-1, label.shape[-1])
                 )
 
-                with torch.autocast() if optimizer is not None else nullcontext():
+                with torch.autocast(device_type=self.device, dtype=torch.bfloat16) if optimizer is not None else nullcontext():
                     preds = self._model(frame)
                     pred = preds["im_feat"]
                     loc = preds["loc_feat"]
