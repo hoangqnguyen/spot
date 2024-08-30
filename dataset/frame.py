@@ -69,37 +69,52 @@ DEFAULT_PAD_LEN = 5
 
 
 def _get_img_transforms(crop_dim=224, is_eval=False):
-    img_transforms = [
-        # Random Crop if not in eval mode
-        (
+    p = 0.0 if is_eval else 0.25
+
+    geometric_transforms = []
+    if not is_eval:
+        geometric_transforms.append(
             transforms.RandomChoice(
                 [
                     transforms.RandomCrop((crop_dim, crop_dim)),
                     transforms.RandomResizedCrop((crop_dim, crop_dim)),
-                    transforms.Resize((crop_dim, crop_dim)),
+                    transforms.Resize((crop_dim, crop_dim)), # No-op
                 ]
             )
-            if not is_eval
-            else transforms.Resize((crop_dim, crop_dim))
-        ),
-        
+        )
+        geometric_transforms.append(
+            transforms.RandomChoice(
+                [
+                    transforms.RandomHorizontalFlip(p=1.0),
+                    transforms.RandomZoomOut(p=1.0),
+                    transforms.RandomPerspective(distortion_scale=0.6, p=1.0),
+                    transforms.RandomRotation(degrees=(0, 45)),
+                    transforms.RandomAffine(
+                        degrees=(30, 70), translate=(0.1, 0.3), scale=(0.5, 0.75)
+                    ),
+                    transforms.Resize((crop_dim, crop_dim)), # No-op
+                ]
+            ),
+        )
+
+    geometric_transforms.append(transforms.Resize((crop_dim, crop_dim)))
+
+    img_transforms = [
         # ColorJittering
+        transforms.RandomApply(nn.ModuleList([transforms.ColorJitter(hue=0.2)]), p=p),
         transforms.RandomApply(
-            nn.ModuleList([transforms.ColorJitter(hue=0.2)]), p=0.25
+            nn.ModuleList([transforms.ColorJitter(saturation=(0.7, 1.2))]), p=p
         ),
         transforms.RandomApply(
-            nn.ModuleList([transforms.ColorJitter(saturation=(0.7, 1.2))]), p=0.25
+            nn.ModuleList([transforms.ColorJitter(brightness=(0.7, 1.2))]), p=p
         ),
         transforms.RandomApply(
-            nn.ModuleList([transforms.ColorJitter(brightness=(0.7, 1.2))]), p=0.25
+            nn.ModuleList([transforms.ColorJitter(contrast=(0.7, 1.2))]), p=p
         ),
-        transforms.RandomApply(
-            nn.ModuleList([transforms.ColorJitter(contrast=(0.7, 1.2))]), p=0.25
-        ),
-        transforms.RandomApply(nn.ModuleList([transforms.GaussianBlur(5)]), p=0.25),
+        transforms.RandomApply(nn.ModuleList([transforms.GaussianBlur(5)]), p=p),
         transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
     ]
-    return transforms.Compose(img_transforms)
+    return transforms.Compose(geometric_transforms + img_transforms)
 
 
 def _print_info_helper(src_file, labels):
@@ -260,7 +275,9 @@ class ActionSpotDataset(Dataset):
 
             frames, out_boxes = self._transform(frames, in_boxes)
             # event_xys = torch.tensor(out_boxes[:, :2] / scale)
-            event_xys = out_boxes.data[:, :2] / torch.tensor([self._crop_dim, self._crop_dim]).reshape(1, 2)
+            event_xys = out_boxes.data[:, :2] / torch.tensor(
+                [self._crop_dim, self._crop_dim]
+            ).reshape(1, 2)
 
         return {
             "frame": frames,

@@ -138,6 +138,10 @@ def compute_average_precision_with_locations(
                 gt_closest_xy = gt_xy
 
         # Record precision each time a true positive is encountered
+        
+        # frame_diff = abs(frame - gt_closest) if gt_closest is not None else None
+        # xy_diff = np.linalg.norm(np.subtract(pred_xy, gt_closest_xy)) if gt_closest is not None else None
+        # print(f" Video: {video}, Frame: {frame}, GT Frame: {gt_closest}, GT XY: {gt_closest_xy}, Pred XY: {pred_xy} Frame Diff: {frame_diff}, XY Diff: {xy_diff}, Tolerance T: {tolerance_t}, Tolerance P: {tolerance_p}")
         if (
             gt_closest is not None
             and abs(frame - gt_closest) <= tolerance_t
@@ -146,11 +150,14 @@ def compute_average_precision_with_locations(
             recalled.add((video, gt_closest))
             p = len(recalled) / i
             pc.append(p)
+            # print("=> True Positive")
 
             # Stop evaluation early if the precision is too low.
             # Not used, however when nin_precision is 0.
             if p < min_precision:
                 break
+        # else:
+            # print("=> Reject")
 
     interp_pc = []
     max_p = 0
@@ -248,7 +255,7 @@ def filter_events_by_score(data, fg_threshold):
 def scale_xy(data, px_scale):
     for video in data:
         for event in video["events"]:
-            event["xy"] = [int(coord * px_scale) for coord in event["xy"]]
+            event["xy"] = [coord * px_scale for coord in event["xy"]]
     return data
 
 def non_max_suppression_events(data, tol_t):

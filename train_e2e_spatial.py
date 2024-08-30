@@ -383,6 +383,7 @@ class E2EModel(BaseRGBModel):
             modality,
             predict_location,
         )
+        self._model = torch.compile(self._model)
         self._model.print_stats()
 
         if multi_gpu:
@@ -432,7 +433,7 @@ class E2EModel(BaseRGBModel):
                     else label.view(-1, label.shape[-1])
                 )
 
-                with torch.cuda.amp.autocast():
+                with torch.autocast() if optimizer is not None else nullcontext():
                     preds = self._model(frame)
                     pred = preds["im_feat"]
                     loc = preds["loc_feat"]
