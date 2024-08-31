@@ -662,6 +662,7 @@ def evaluate(
         )
         avg_mAP_t = np.mean(mAPs_t[1:])
         avg_mAP_s = np.mean(mAPs_p)
+        
         # hamornic mean
         avg_mAP = 2 * avg_mAP_t * avg_mAP_s / (avg_mAP_t + avg_mAP_s + 1e-6)
 

@@ -2,6 +2,7 @@ import sys
 from collections import defaultdict
 from tabulate import tabulate
 import numpy as np
+import copy
 import matplotlib.pyplot as plt
 
 
@@ -300,10 +301,13 @@ def compute_mAPs_with_locations(
     px_scale=224,
 ):
     # post processing
+    truth = copy.deepcopy(truth) # Make a copy of the ground truth to avoid modifying the original
+    pred = copy.deepcopy(pred) # Make a copy of the predictions to avoid modifying the original
+
     pred = filter_events_by_score(pred, fg_threshold) # Filter out low confidence predictions
     pred = scale_xy(pred, px_scale) 
     pred = non_max_suppression_events(pred, 3) # Suppress events within 3 frame
-    truth = scale_xy(truth, px_scale) 
+    truth = scale_xy(truth, px_scale)
 
     # breakpoint()
 
