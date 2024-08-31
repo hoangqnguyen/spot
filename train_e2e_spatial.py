@@ -460,7 +460,7 @@ class E2EModel(BaseRGBModel):
                             pred_loc.sigmoid(), target_xy, reduction="none"
                         ).sum(dim=-1)
 
-                        loss_loc += (xy_loss * event_mask).sum() / event_mask.sum()
+                        loss_loc += (xy_loss * event_mask).sum() / (event_mask.sum() + 1e-6)
 
                     loss = loss_cls + loss_loc
 
@@ -909,6 +909,7 @@ def main(args):
             )
             epoch += 1
 
+        # model._model = torch.compile(model._model)
         # Write it to console
         store_config("/dev/stdout", args, num_epochs, classes)
 
