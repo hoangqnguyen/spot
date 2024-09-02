@@ -274,12 +274,14 @@ class ActionSpotDataset(Dataset):
             )
 
             frames, out_boxes = self._transform(frames, in_boxes)
-            # event_xys = torch.tensor(out_boxes[:, :2] / scale)
             event_xys = out_boxes.data[:, :2] / torch.tensor(
                 [self._crop_dim, self._crop_dim]
             ).reshape(1, 2)
 
         return {
+            "video": video_meta["video"],
+            "start": base_idx,
+            "end": base_idx + self._clip_len * self._stride,
             "frame": frames,
             "contains_event": int(np.sum(labels) > 0),
             "label": labels,

@@ -461,6 +461,10 @@ class E2EModel(BaseRGBModel):
                         ).sum(dim=-1)
 
                         loss_loc += (xy_loss * event_mask).sum() / (event_mask.sum() + 1e-6)
+                        
+                        # breakpoint if loss loc is nan
+                        if torch.isnan(loss_loc):
+                            breakpoint()
 
                     loss = loss_cls + loss_loc
 
