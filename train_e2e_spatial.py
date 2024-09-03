@@ -156,6 +156,34 @@ def get_args():
 
     return parser.parse_args()
 
+def calculate_loss_contrast(im_feat, labels):
+    """
+    Calculate the loss contrast based on the provided labels and image features.
+
+    Args:
+    - labels (torch.Tensor): A tensor of labels corresponding to the features.
+    - im_feat (torch.Tensor): A tensor representing the image features.
+    - num_classes (int): The number of classes (default is 3).
+    - target_class (int): The class label of interest for contrast calculation (default is 2).
+
+    Returns:
+    - loss_contrast (float): The calculated loss contrast value.
+    """
+
+    # Create foreground mask (excluding background class 0)
+    fg_mask = labels != 0
+
+    # Extract foreground and background features based on masks
+    fg_feat = im_feat[fg_mask]
+    bg_feat = im_feat[~fg_mask]
+
+    # Calculate the delta (difference) between foreground and background features
+    delta = torch.norm(fg_feat.unsqueeze(1) - bg_feat.unsqueeze(0), dim=-1).mean()
+
+    # Compute the loss contrast
+    loss_contrast = 1 / (delta.mean() + 1e-6)
+
+    return loss_contrast
 
 class E2EModel(BaseRGBModel):
 
@@ -347,7 +375,7 @@ class E2EModel(BaseRGBModel):
             if self._predict_location:
                 loc_feat = self._pred_loc(im_feat)
 
-            return {"im_feat": self._pred_fine(im_feat), "loc_feat": loc_feat}
+            return {"im_feat": self._pred_fine(im_feat), "loc_feat": loc_feat, "cnn_feat": im_feat}
 
         def print_stats(self):
             print(f"Model params:{sum(p.numel() for p in self.parameters()):,}")
@@ -416,6 +444,8 @@ class E2EModel(BaseRGBModel):
         epoch_loss = 0.0
         epoch_loss_cls = 0.0
         epoch_loss_loc = 0.0
+        epoch_loss_contrast = 0.0
+
         with torch.no_grad() if optimizer is None else nullcontext():
             pbar = tqdm(loader)
             for batch_idx, batch in enumerate(pbar):
@@ -435,12 +465,17 @@ class E2EModel(BaseRGBModel):
 
                 with torch.cuda.amp.autocast() if optimizer is not None else nullcontext():
                     preds = self._model(frame)
+
+                    cnn_feat = preds["cnn_feat"]
                     pred = preds["im_feat"]
                     loc = preds["loc_feat"]
 
                     loss = 0.0
                     loss_cls = 0.0
                     loss_loc = 0.0
+
+                    loss_contrast = calculate_loss_contrast(cnn_feat.flatten(0,1), label)
+
                     if len(pred.shape) == 3:
                         pred = pred.unsqueeze(0)
 
@@ -466,7 +501,7 @@ class E2EModel(BaseRGBModel):
                         if torch.isnan(loss_loc):
                             breakpoint()
 
-                    loss = loss_cls + loss_loc
+                    loss = loss_cls + loss_loc + loss_contrast
 
                 if optimizer is not None:
                     step(
@@ -479,6 +514,7 @@ class E2EModel(BaseRGBModel):
 
                 epoch_loss += loss.detach().item()
                 epoch_loss_cls += loss_cls.detach().item()
+                epoch_loss_contrast += loss_contrast.detach().item()
 
                 if self._model._predict_location:
                     epoch_loss_loc += loss_loc.detach().item()
@@ -488,6 +524,7 @@ class E2EModel(BaseRGBModel):
                         "sum": loss.detach().item(),
                         "cls": loss_cls.detach().item(),
                         "loc": loss_loc.detach().item(),
+                        "contrast": loss_contrast.detach().item(),
                     }
                 )
 
@@ -495,6 +532,7 @@ class E2EModel(BaseRGBModel):
             "sum": epoch_loss / len(loader),
             "cls": epoch_loss_cls / len(loader),
             "loc": epoch_loss_loc / len(loader),
+            "contrast": epoch_loss_contrast / len(loader),
         }
 
     def predict(self, seq, use_amp=False, presence_threshold=0.0):
@@ -928,8 +966,15 @@ def main(args):
             )
             val_loss_dict = model.epoch(val_loader, acc_grad_iter=args.acc_grad_iter)
 
-            print(
-                f'[Epoch {epoch}] Train loss: cls={train_loss_dict["cls"]:0.5f}, loc={train_loss_dict["loc"]:0.5f}, sum={train_loss_dict["sum"]:0.5f} | Val loss: cls={val_loss_dict["cls"]:0.5f}, loc={val_loss_dict["loc"]:0.5f}, sum={val_loss_dict["sum"]:0.5f}'
+            print("\n",
+                tabulate(
+                    [
+                        ["Train loss", train_loss_dict["cls"], train_loss_dict["loc"], train_loss_dict["contrast"], train_loss_dict["sum"]],
+                        ["Val loss", val_loss_dict["cls"], val_loss_dict["loc"], val_loss_dict["contrast"], val_loss_dict["sum"]],
+                    ],
+                    headers=["", "cls", "loc", "contrast", "sum"],
+                    floatfmt=".5f",
+                )
             )
 
             val_mAP = 0
