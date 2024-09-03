@@ -515,7 +515,7 @@ class E2EModel(BaseRGBModel):
 
                 epoch_loss += loss.detach().item()
                 epoch_loss_cls += loss_cls.detach().item()
-                epoch_loss_contrast += loss_contrast.detach().item()
+                epoch_loss_contrast += (loss_contrast.detach().item() if isinstance(loss_contrast, torch.Tensor) else loss_contrast)
 
                 if self._model._predict_location:
                     epoch_loss_loc += loss_loc.detach().item()
