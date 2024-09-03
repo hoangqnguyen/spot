@@ -972,7 +972,7 @@ def main(args):
                         ["Train loss", train_loss_dict["cls"], train_loss_dict["loc"], train_loss_dict["contrast"], train_loss_dict["sum"]],
                         ["Val loss", val_loss_dict["cls"], val_loss_dict["loc"], val_loss_dict["contrast"], val_loss_dict["sum"]],
                     ],
-                    headers=["", "cls", "loc", "contrast", "sum"],
+                    headers=[f"Epoch: {epoch}", "cls", "loc", "contrast", "sum"],
                     floatfmt=".5f",
                 )
             )
