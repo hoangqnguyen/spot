@@ -170,7 +170,7 @@ def calculate_loss_contrast(im_feat, labels):
     - loss_contrast (float): The calculated loss contrast value.
     """
     if (labels == 0).all():
-        return 0.0
+        return torch.tensor(0.0)
     # Create foreground mask (excluding background class 0)
     fg_mask = labels != 0
 
@@ -502,7 +502,7 @@ class E2EModel(BaseRGBModel):
                         if torch.isnan(loss_loc):
                             breakpoint()
 
-                    loss = loss_cls + loss_loc + loss_contrast
+                    loss = loss_cls + loss_loc + loss_contrast * 0.1
 
                 if optimizer is not None:
                     step(
@@ -515,7 +515,7 @@ class E2EModel(BaseRGBModel):
 
                 epoch_loss += loss.detach().item()
                 epoch_loss_cls += loss_cls.detach().item()
-                epoch_loss_contrast += (loss_contrast.detach().item() if isinstance(loss_contrast, torch.Tensor) else loss_contrast)
+                epoch_loss_contrast += loss_contrast.detach().item()
 
                 if self._model._predict_location:
                     epoch_loss_loc += loss_loc.detach().item()

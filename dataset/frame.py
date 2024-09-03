@@ -67,6 +67,10 @@ class FrameReader:
 # Pad the start/end of videos with empty frames
 DEFAULT_PAD_LEN = 5
 
+def check_for_nan(img, transform_name):
+    if torch.isnan(img[0] if isinstance(img, tuple) else img).any():
+        print(f"NaN found after {transform_name}")
+    return img
 
 def _get_img_transforms(crop_dim=224, is_eval=False):
     p = 0.0 if is_eval else 0.25
@@ -114,7 +118,15 @@ def _get_img_transforms(crop_dim=224, is_eval=False):
         transforms.RandomApply(nn.ModuleList([transforms.GaussianBlur(5)]), p=p),
         transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
     ]
-    return transforms.Compose(geometric_transforms + img_transforms)
+    # return transforms.Compose(geometric_transforms + img_transforms)
+
+    return transforms.Compose([
+        transforms.Lambda(lambda img: check_for_nan(img, "Initial")),
+        *geometric_transforms,
+        transforms.Lambda(lambda img: check_for_nan(img, "Geometric Transforms")),
+        *img_transforms,
+        transforms.Lambda(lambda img: check_for_nan(img, "Color Jittering and Normalization")),
+    ])
 
 
 def _print_info_helper(src_file, labels):
