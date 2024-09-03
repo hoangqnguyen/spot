@@ -169,7 +169,8 @@ def calculate_loss_contrast(im_feat, labels):
     Returns:
     - loss_contrast (float): The calculated loss contrast value.
     """
-
+    if (labels == 0).all():
+        return 0.0
     # Create foreground mask (excluding background class 0)
     fg_mask = labels != 0
 
