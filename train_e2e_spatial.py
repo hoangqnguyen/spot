@@ -680,34 +680,37 @@ def evaluate(
     # breakpoint()
     avg_mAP_t = None
     if calc_stats:
-        # Print the evaluation results
-        print("=== Results on {} (w/o NMS) ===".format(split))
-        print("Error (frame-level): {:0.2f}\n".format(err.get() * 100))
+        for fg_threshold in np.arange(0.1, 1, 0.1):
+            # Print the evaluation results
+            # print("=== Results on {} (w/o NMS) ===".format(split))
+            print("=== Results on {} (FG_THRES={:.2f}) ===".format(split, fg_threshold))
+            print("Error (frame-level): {:0.2f}\n".format(err.get() * 100))
 
-        def get_f1_tab_row(str_k):
-            k = classes[str_k] if str_k != "any" else None
-            return [str_k, f1.get(k) * 100, *f1.tp_fp_fn(k)]
+            def get_f1_tab_row(str_k):
+                k = classes[str_k] if str_k != "any" else None
+                return [str_k, f1.get(k) * 100, *f1.tp_fp_fn(k)]
 
-        rows = [get_f1_tab_row("any")]
-        for c in sorted(classes):
-            rows.append(get_f1_tab_row(c))
-        print(
-            tabulate(
-                rows, headers=["Exact frame", "F1", "TP", "FP", "FN"], floatfmt="0.2f"
+            rows = [get_f1_tab_row("any")]
+            for c in sorted(classes):
+                rows.append(get_f1_tab_row(c))
+            print(
+                tabulate(
+                    rows, headers=["Exact frame", "F1", "TP", "FP", "FN"], floatfmt="0.2f"
+                )
             )
-        )
-        print()
+            print()
 
-        # Calculate mean average precision (mAP)
-        # mAPs, _ = compute_mAPs(dataset.labels, pred_events_high_recall)
-        mAPs_t, mAPs_p = compute_mAPs_with_locations(
-            dataset.labels, pred_events_high_recall, px_scale=px_scale
-        )
-        avg_mAP_t = np.mean(mAPs_t[1:])
-        avg_mAP_s = np.mean(mAPs_p)
-        
-        # hamornic mean
-        avg_mAP = 2 * avg_mAP_t * avg_mAP_s / (avg_mAP_t + avg_mAP_s + 1e-6)
+            # Calculate mean average precision (mAP)
+            # mAPs, _ = compute_mAPs(dataset.labels, pred_events_high_recall)
+            mAPs_t, mAPs_p = compute_mAPs_with_locations(
+                dataset.labels, pred_events_high_recall, px_scale=px_scale, fg_threshold=fg_threshold
+            )
+            avg_mAP_t = np.mean(mAPs_t[1:])
+            avg_mAP_s = np.mean(mAPs_p)
+            
+            # hamornic mean
+            avg_mAP = 2 * avg_mAP_t * avg_mAP_s / (avg_mAP_t + avg_mAP_s + 1e-6)
+            print("Harmonic mean (temporal and spatial mAPs): {:0.2%}".format(avg_mAP))
 
     if save_pred is not None:
         os.makedirs(os.path.dirname(save_pred), exist_ok=True)
@@ -718,7 +721,6 @@ def evaluate(
             store_gz_json(save_pred + ".score.json.gz", pred_scores)
 
     print("=" * 50)
-    print("Harmonic mean between temporal and spatial mAPs: {:0.2%}".format(avg_mAP))
     return avg_mAP  # Return the average mean average precision (mAP)
 
 

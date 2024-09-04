@@ -110,7 +110,7 @@ def compute_average_precision_with_locations(
     for event_class in truth.values():
         for video, events in event_class.items():
             extracted_data[video].extend(events)
-    
+
     truth = extracted_data
 
     total = sum([len(x) for x in truth.values()])
@@ -130,7 +130,7 @@ def compute_average_precision_with_locations(
         # Find the ground truth frame that is closest to the prediction
         gt_closest = None
         gt_closest_xy = None
-        
+
         for gt_frame, gt_xy in truth.get(video, []):
             if (video, gt_frame) in recalled:
                 continue
@@ -139,14 +139,14 @@ def compute_average_precision_with_locations(
                 gt_closest_xy = gt_xy
 
         # Record precision each time a true positive is encountered
-        
+
         # frame_diff = abs(frame - gt_closest) if gt_closest is not None else None
         # xy_diff = np.linalg.norm(np.subtract(pred_xy, gt_closest_xy)) if gt_closest is not None else None
         # print(f" Video: {video}, Frame: {frame}, GT Frame: {gt_closest}, GT XY: {gt_closest_xy}, Pred XY: {pred_xy} Frame Diff: {frame_diff}, XY Diff: {xy_diff}, Tolerance T: {tolerance_t}, Tolerance P: {tolerance_p}")
         if (
             gt_closest is not None
             and abs(frame - gt_closest) <= tolerance_t
-            and np.linalg.norm(np.subtract(pred_xy, gt_closest_xy)) <= tolerance_p
+            and int(np.linalg.norm(np.subtract(pred_xy, gt_closest_xy))) <= tolerance_p
         ):
             recalled.add((video, gt_closest))
             p = len(recalled) / i
@@ -158,7 +158,7 @@ def compute_average_precision_with_locations(
             if p < min_precision:
                 break
         # else:
-            # print("=> Reject")
+        # print("=> Reject")
 
     interp_pc = []
     max_p = 0
@@ -244,20 +244,24 @@ def compute_mAPs(truth, pred, tolerances=list(range(6)), plot_pr=False):
 def filter_events_by_score(data, fg_threshold):
     filtered_data = []
     for video in data:
-        filtered_events = [event for event in video["events"] if event["score"] >= fg_threshold]
+        filtered_events = [
+            event for event in video["events"] if event["score"] >= fg_threshold
+        ]
         filtered_video = {
             "video": video["video"],
             "events": filtered_events,
-            "fps": video["fps"]
+            "fps": video["fps"],
         }
         filtered_data.append(filtered_video)
     return filtered_data
+
 
 def scale_xy(data, px_scale):
     for video in data:
         for event in video["events"]:
             event["xy"] = [coord * px_scale for coord in event["xy"]]
     return data
+
 
 def non_max_suppression_events(data, tol_t):
     def suppress_events(events, tol_t):
@@ -267,7 +271,9 @@ def non_max_suppression_events(data, tol_t):
         while i < len(events):
             current_event = events[i]
             j = i + 1
-            while j < len(events) and events[j]["frame"] - current_event["frame"] <= tol_t:
+            while (
+                j < len(events) and events[j]["frame"] - current_event["frame"] <= tol_t
+            ):
                 if events[j]["score"] > current_event["score"]:
                     current_event = events[j]
                 j += 1
@@ -282,14 +288,15 @@ def non_max_suppression_events(data, tol_t):
             if label not in events_by_label:
                 events_by_label[label] = []
             events_by_label[label].append(event)
-        
+
         suppressed_events = []
         for label, events in events_by_label.items():
             suppressed_events.extend(suppress_events(events, tol_t))
-        
+
         video["events"] = suppressed_events
-    
+
     return data
+
 
 def compute_mAPs_with_locations(
     truth,
@@ -301,12 +308,18 @@ def compute_mAPs_with_locations(
     px_scale=224,
 ):
     # post processing
-    truth = copy.deepcopy(truth) # Make a copy of the ground truth to avoid modifying the original
-    pred = copy.deepcopy(pred) # Make a copy of the predictions to avoid modifying the original
+    truth = copy.deepcopy(
+        truth
+    )  # Make a copy of the ground truth to avoid modifying the original
+    pred = copy.deepcopy(
+        pred
+    )  # Make a copy of the predictions to avoid modifying the original
 
-    pred = filter_events_by_score(pred, fg_threshold) # Filter out low confidence predictions
-    pred = scale_xy(pred, px_scale) 
-    pred = non_max_suppression_events(pred, 3) # Suppress events within 3 frame
+    pred = filter_events_by_score(
+        pred, fg_threshold
+    )  # Filter out low confidence predictions
+    pred = scale_xy(pred, px_scale)
+    pred = non_max_suppression_events(pred, 3)  # Suppress events within 3 frame
     truth = scale_xy(truth, px_scale)
 
     # breakpoint()
@@ -353,18 +366,22 @@ def compute_mAPs_with_locations(
         class_aps.append(("mAP", mAP_t))
         class_aps_for_tol.append(class_aps)
 
-
         # breakpoint()
         # ==> Spatial
-        location_aps = [(tol_p, compute_average_precision_with_locations(
-            get_predictions(pred, label=None),
-            truth_by_label,
-            tolerance_t=tol_t,
-            tolerance_p=tol_p,
-            plot_ax=axes[j, i] if axes is not None else None,
-        )) for tol_p in tolerances_p]
+        location_aps = [
+            (
+                tol_p,
+                compute_average_precision_with_locations(
+                    get_predictions(pred, label=None),
+                    truth_by_label,
+                    tolerance_t=tol_t,
+                    tolerance_p=tol_p,
+                    plot_ax=axes[j, i] if axes is not None else None,
+                ),
+            )
+            for tol_p in tolerances_p
+        ]
         location_aps_for_tol.append((tol_t, location_aps))
-
 
     header = ["Temporal AP @ tol"] + tolerances_t
     rows = []
