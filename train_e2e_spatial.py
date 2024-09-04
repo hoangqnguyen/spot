@@ -156,6 +156,24 @@ def get_args():
 
     return parser.parse_args()
 
+def focal_loss_multiclass_with_logits(
+    input,
+    target,
+    gamma: float = 2.0,
+    reduction: str = "mean",
+    eps: float = 1e-8,
+):
+    ce_loss = F.cross_entropy(input, target, reduction='none')
+    pt = torch.exp(-ce_loss)
+    weight = (1 - pt) ** gamma
+    focal_loss = weight * ce_loss
+    if reduction == "mean":
+        return focal_loss.mean()
+    elif reduction == "sum":
+        return focal_loss.sum()
+    else:
+        return focal_loss
+
 def calculate_loss_contrast(im_feat, labels):
     """
     Calculate the loss contrast based on the provided labels and image features.
@@ -475,14 +493,19 @@ class E2EModel(BaseRGBModel):
                     loss_cls = 0.0
                     loss_loc = 0.0
 
-                    loss_contrast = calculate_loss_contrast(cnn_feat.flatten(0,1), label)
+                    # loss_contrast = calculate_loss_contrast(cnn_feat.flatten(0,1), label)
+                    loss_contrast = torch.tensor(0.0).to(self.device)
 
                     if len(pred.shape) == 3:
                         pred = pred.unsqueeze(0)
 
                     for i in range(pred.shape[0]):
-                        loss_cls += F.cross_entropy(
-                            pred[i].reshape(-1, self._num_classes), label, **ce_kwargs
+                        # loss_cls += F.cross_entropy(
+                        #     pred[i].reshape(-1, self._num_classes), label, **ce_kwargs
+                        # )
+                        
+                        loss_cls += focal_loss_multiclass_with_logits(
+                            pred[i].reshape(-1, self._num_classes), label, gamma=2.0, reduction='mean'
                         )
 
                     if self._model._predict_location:
