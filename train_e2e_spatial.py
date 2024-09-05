@@ -30,7 +30,7 @@ from util.io import load_json, store_json, store_gz_json, clear_files
 from util.dataset import DATASETS, load_classes
 from util.score import compute_mAPs, compute_mAPs_with_locations
 from torchvision.ops.focal_loss import sigmoid_focal_loss
-
+from model.spotformer import SpotFormer, calc_loss
 
 EPOCH_NUM_FRAMES = 500000
 
@@ -204,6 +204,55 @@ def calculate_loss_contrast(im_feat, labels):
 
     return loss_contrast
 
+
+def custom_collate_fn(batch):
+    """
+    Custom collate function for handling batches of dictionaries with varying lengths,
+    including non-tensor values like lists, integers, or strings.
+    """
+    batch_dict = {}
+    
+    # Iterate over each key in the first item (assuming all dicts have the same keys)
+    for key in batch[0].keys():
+        # For each key, gather all values in the batch
+        key_values = [sample[key] for sample in batch]
+        
+        # Check if the values are tensors
+        if isinstance(key_values[0], torch.Tensor):
+            # For tensors of different lengths, use pad_sequence to handle the padding
+            if len(key_values[0].shape) > 0:
+                # Pad tensors to the longest sequence and create a batch
+                padded_vals = torch.nn.utils.rnn.pad_sequence(key_values, batch_first=True)
+                batch_dict[key] = padded_vals
+            else:
+                # If tensors have the same shape, stack them directly
+                batch_dict[key] = torch.stack(key_values)
+        
+        # If the values are lists, convert them to tensors and handle padding
+        elif isinstance(key_values[0], list):
+            # Determine the maximum length for the lists
+            max_len = max([len(val) for val in key_values])
+            
+            # Pad the lists and convert to tensors
+            padded_vals = [
+                torch.tensor(val + [0] * (max_len - len(val))) if len(val) < max_len else torch.tensor(val)
+                for val in key_values
+            ]
+            
+            # Stack the padded tensors
+            batch_dict[key] = torch.stack(padded_vals)
+        
+        # If the values are integers, floats, or strings (scalar values), just gather them into a list
+        elif isinstance(key_values[0], np.ndarray):
+            batch_dict[key] = torch.tensor(np.array(key_values))
+        elif isinstance(key_values[0], str):
+            batch_dict[key] = key_values
+        else:
+            batch_dict[key] = torch.tensor(key_values)
+    
+    return batch_dict
+
+
 class E2EModel(BaseRGBModel):
 
     class Impl(nn.Module):
@@ -309,33 +358,14 @@ class E2EModel(BaseRGBModel):
                 self._pred_fine = ASFormerPrediction(feat_dim, num_classes, 3)
             elif temporal_arch == "":
                 self._pred_fine = FCPrediction(feat_dim, num_classes)
-            elif temporal_arch == "transformer_enc_only_base_11m":
-                from positional_encodings.torch_encodings import (
-                    PositionalEncoding1D,
-                    Summer,
+            elif temporal_arch == "tf_dec":
+                self._pred_fine = SpotFormer(
+                    num_classes, num_queries=20, input_dim=feat_dim, hidden_dim=256, num_heads=8, num_layers=6, dropout=0.1
                 )
-                from x_transformers import Encoder
+                # fc = MLP(hidden_dim, hidden_dim, num_classes, 3)  # final classifier
 
-                hidden_dim = 256
-                down_projection = nn.Linear(
-                    feat_dim, hidden_dim
-                )  # feat_dim is too large, needs to down project
-                pos_enc = Summer(
-                    PositionalEncoding1D(hidden_dim)
-                )  # positional encoding for sequence
-                encoder = Encoder(
-                    dim=hidden_dim,
-                    depth=5,
-                    heads=8,
-                    attn_flash=True,
-                    layer_dropout=0.1,  # stochastic depth - dropout entire layer
-                    attn_dropout=0.1,  # dropout post-attention
-                    ff_dropout=0.1,  # feedforward dropout
-                )  # encoder-only transformer
-                fc = MLP(hidden_dim, hidden_dim, num_classes, 3)  # final classifier
-
-                # put everything together
-                self._pred_fine = nn.Sequential(down_projection, pos_enc, encoder, fc)
+                # # put everything together
+                # self._pred_fine = nn.Sequential(down_projection, pos_enc, encoder, fc)
 
             elif temporal_arch == "mamba_1":
                 from mamba_ssm import Mamba
@@ -356,17 +386,6 @@ class E2EModel(BaseRGBModel):
             else:
                 raise NotImplementedError(temporal_arch)
 
-            self._predict_location = predict_location
-            if self._predict_location:
-                self._pred_loc = nn.Sequential(
-                    MLP(hidden_dim, hidden_dim * 4, output_dim=hidden_dim, num_layers=3),
-                    nn.Linear(hidden_dim, 2),
-                )
-                # from model.common import ImprovedLocationPredictor
-
-                # self._pred_loc = ImprovedLocationPredictor(
-                #     input_dim=hidden_dim, hidden_dim=256, output_dim=2
-                # )
 
         def forward(self, x):
             batch_size, true_clip_len, channels, height, width = x.shape
@@ -389,12 +408,14 @@ class E2EModel(BaseRGBModel):
             if true_clip_len != clip_len:
                 # Undo padding
                 im_feat = im_feat[:, :true_clip_len, :]
+            
+            return self._pred_fine(im_feat)
 
-            loc_feat = None
-            if self._predict_location:
-                loc_feat = self._pred_loc(im_feat)
+            # loc_feat = None
+            # if self._predict_location:
+            #     loc_feat = self._pred_loc(im_feat)
 
-            return {"im_feat": self._pred_fine(im_feat), "loc_feat": loc_feat, "cnn_feat": im_feat}
+            # return {"im_feat": self._pred_fine(im_feat), "loc_feat": loc_feat, "cnn_feat": im_feat}
 
         def print_stats(self):
             print(f"Model params:{sum(p.numel() for p in self.parameters()):,}")
@@ -454,78 +475,22 @@ class E2EModel(BaseRGBModel):
             optimizer.zero_grad()
             self._model.train()
 
-        ce_kwargs = {}
-        if fg_weight != 1:
-            ce_kwargs["weight"] = torch.FloatTensor(
-                [1] + [fg_weight] * (self._num_classes - 1)
-            ).to(self.device)
-
         epoch_loss = 0.0
-        epoch_loss_cls = 0.0
-        epoch_loss_loc = 0.0
-        epoch_loss_contrast = 0.0
-
         with torch.no_grad() if optimizer is None else nullcontext():
             pbar = tqdm(loader)
             for batch_idx, batch in enumerate(pbar):
                 # frame = loader.dataset.load_frame_gpu(batch, self.device)
                 frame = batch["frame"].to(self.device)
-                label = batch["label"].to(self.device)
-
-                if self._model._predict_location:
-                    target_xy = batch["xy"].to(self.device).reshape(-1, 2)  # B*T, 2
-
-                # Depends on whether mixup is used
-                label = (
-                    label.flatten()
-                    if len(label.shape) == 2
-                    else label.view(-1, label.shape[-1])
+                targets = dict(
+                    cls=batch["cls"].to(self.device),
+                    tloc=batch["tloc"].to(self.device),
                 )
 
                 with torch.cuda.amp.autocast() if optimizer is not None else nullcontext():
-                    preds = self._model(frame)
-
-                    cnn_feat = preds["cnn_feat"]
-                    pred = preds["im_feat"]
-                    loc = preds["loc_feat"]
-
-                    loss = 0.0
-                    loss_cls = 0.0
-                    loss_loc = 0.0
-
-                    # loss_contrast = calculate_loss_contrast(cnn_feat.flatten(0,1), label)
-                    loss_contrast = torch.tensor(0.0).to(self.device)
-
-                    if len(pred.shape) == 3:
-                        pred = pred.unsqueeze(0)
-
-                    for i in range(pred.shape[0]):
-                        # loss_cls += F.cross_entropy(
-                        #     pred[i].reshape(-1, self._num_classes), label, **ce_kwargs
-                        # )
-                        
-                        loss_cls += focal_loss_multiclass_with_logits(
-                            pred[i].reshape(-1, self._num_classes), label, gamma=2.0, reduction='mean'
-                        )
-
-                    if self._model._predict_location:
-                        # Assume the objectness score is the first element in loc[i], and the rest are x and y coordinates.
-                        pred_loc = loc.reshape(-1, 2)  # B*T, 2
-
-                        event_mask = (label != 0).float().reshape(-1)  # B*T
-
-                        # Apply the standard L1 loss to the masked x and y coordinates
-                        xy_loss = F.l1_loss(
-                            pred_loc.sigmoid(), target_xy, reduction="none"
-                        ).sum(dim=-1)
-
-                        loss_loc += (xy_loss * event_mask).sum() / (event_mask.sum() + 1e-6)
-                        
-                        # breakpoint if loss loc is nan
-                        if torch.isnan(loss_loc):
-                            breakpoint()
-
-                    loss = loss_cls + loss_loc + loss_contrast * 0.1
+                    outputs = self._model(frame)
+                    calc_loss_dict = calc_loss(outputs, targets, self._num_classes-1, fg_weight=fg_weight)
+                    loss = calc_loss_dict["loss"]
+                    
 
                 if optimizer is not None:
                     step(
@@ -537,29 +502,19 @@ class E2EModel(BaseRGBModel):
                     )
 
                 epoch_loss += loss.detach().item()
-                epoch_loss_cls += loss_cls.detach().item()
-                epoch_loss_contrast += loss_contrast.detach().item()
-
-                if self._model._predict_location:
-                    epoch_loss_loc += loss_loc.detach().item()
 
                 pbar.set_postfix(
                     {
-                        "sum": loss.detach().item(),
-                        "cls": loss_cls.detach().item(),
-                        "loc": loss_loc.detach().item(),
-                        "contrast": loss_contrast.detach().item(),
+                        "loss": loss.detach().item()
                     }
                 )
 
-        return {
-            "sum": epoch_loss / len(loader),
-            "cls": epoch_loss_cls / len(loader),
-            "loc": epoch_loss_loc / len(loader),
-            "contrast": epoch_loss_contrast / len(loader),
-        }
+        # return {
+        #     "sum": epoch_loss / len(loader)
+        # }
+        return epoch_loss / len(loader)
 
-    def predict(self, seq, use_amp=False, presence_threshold=0.0):
+    def predict(self, seq, use_amp=False):
         if not isinstance(seq, torch.Tensor):
             seq = torch.FloatTensor(seq)
         if len(seq.shape) == 4:  # (L, C, H, W)
@@ -567,17 +522,42 @@ class E2EModel(BaseRGBModel):
         if seq.device != self.device:
             seq = seq.to(self.device)
 
+        B, T = seq.shape[:2]
         self._model.eval()
         with torch.no_grad():
             with torch.cuda.amp.autocast() if use_amp else nullcontext():
                 pred_dict = self._model(seq)
-            pred_cls_score = torch.softmax(pred_dict["im_feat"], axis=2).cpu().numpy()
-            pred_cls = torch.argmax(pred_dict["im_feat"], axis=2).cpu().numpy()
-            if self._model._predict_location:
-                pred_loc = pred_dict["loc_feat"].reshape(seq.shape[0], -1, 2).sigmoid().cpu().numpy()  # B, T, 2
-                return pred_cls, pred_cls_score, pred_loc
-            else:
-                return pred_cls, pred_cls_score
+                pred_logits = pred_dict["pred_logits"]
+
+            pred_tloc = pred_dict["pred_tloc"].sigmoid().detach().cpu().numpy()
+            pred_cls = pred_logits.argmax(axis=-1).detach().cpu().numpy()
+            pred_score = pred_logits.softmax(axis=-1).max(axis=-1).values.detach().cpu().numpy()
+            seq_len = seq.shape[1]
+
+            pred_cls_out = np.zeros((B, T))
+            pred_cls_score = np.zeros((B, T, self._num_classes))
+            pred_cls_xy = np.zeros((B, T, 2))
+            
+            result_dict = [
+                [
+                    dict(
+                        cls=cls,
+                        score=score,
+                        frame=int(tloc[0] * seq_len),
+                        xy=(tloc[1], tloc[2]),
+                    )
+                    for cls, score, tloc in zip(pred_cls[i], pred_score[i], pred_tloc[i])
+                ]
+                for i in range(pred_cls.shape[0])
+            ]
+
+            for b in range(B):
+                for ev in result_dict[b]:
+                    pred_cls_out[b, ev["frame"]] = ev["cls"]
+                    pred_cls_score[b, ev["frame"], ev["cls"]] = ev["score"]
+                    pred_cls_xy[b, ev["frame"]] = ev["xy"]
+
+            return pred_cls_out, pred_cls_score, pred_cls_xy
 
 
 def evaluate(
@@ -614,6 +594,7 @@ def evaluate(
             num_workers=BASE_NUM_WORKERS * 2,
             pin_memory=True,
             batch_size=batch_size,
+            collate_fn=custom_collate_fn,
         )
     ):
         if batch_size > 1:
@@ -644,6 +625,7 @@ def evaluate(
                 start = clip["start"][i].item()
                 if start < 0:
                     # Adjust predictions if the start index is negative
+                    # breakpoint()
                     pred_scores = pred_scores[-start:, :]
                     if predict_location:
                         pred_loc = pred_loc[-start:, :]
@@ -949,6 +931,7 @@ def main(args):
             num_workers=get_num_train_workers(args),
             prefetch_factor=1,
             worker_init_fn=worker_init_fn,
+            collate_fn=custom_collate_fn,
         )
         val_loader = DataLoader(
             val_data,
@@ -957,6 +940,7 @@ def main(args):
             pin_memory=True,
             num_workers=BASE_NUM_WORKERS,
             worker_init_fn=worker_init_fn,
+            collate_fn=custom_collate_fn,
         )
 
         optimizer, scaler = model.get_optimizer({"lr": args.learning_rate})
@@ -983,25 +967,27 @@ def main(args):
         store_config("/dev/stdout", args, num_epochs, classes)
 
         for epoch in range(epoch, num_epochs):
-            train_loss_dict = model.epoch(
+            train_loss = model.epoch(
                 train_loader,
                 optimizer,
                 scaler,
                 lr_scheduler=lr_scheduler,
                 acc_grad_iter=args.acc_grad_iter,
             )
-            val_loss_dict = model.epoch(val_loader, acc_grad_iter=args.acc_grad_iter)
+            val_loss = model.epoch(val_loader, acc_grad_iter=args.acc_grad_iter)
+            print("Train loss:", train_loss)
+            print("Val loss:", val_loss)
 
-            print("\n",
-                tabulate(
-                    [
-                        ["Train loss", train_loss_dict["cls"], train_loss_dict["loc"], train_loss_dict["contrast"], train_loss_dict["sum"]],
-                        ["Val loss", val_loss_dict["cls"], val_loss_dict["loc"], val_loss_dict["contrast"], val_loss_dict["sum"]],
-                    ],
-                    headers=[f"Epoch: {epoch}", "cls", "loc", "contrast", "sum"],
-                    floatfmt=".5f",
-                )
-            )
+            # print("\n",
+            #     tabulate(
+            #         [
+            #             ["Train loss", train_loss_dict["cls"], train_loss_dict["loc"], train_loss_dict["contrast"], train_loss_dict["sum"]],
+            #             ["Val loss", val_loss_dict["cls"], val_loss_dict["loc"], val_loss_dict["contrast"], val_loss_dict["sum"]],
+            #         ],
+            #         headers=[f"Epoch: {epoch}", "cls", "loc", "contrast", "sum"],
+            #         floatfmt=".5f",
+            #     )
+            # )
 
             val_mAP = 0
             if args.criterion == "loss":
@@ -1036,8 +1022,8 @@ def main(args):
             losses.append(
                 {
                     "epoch": epoch,
-                    "train": train_loss_dict["sum"],
-                    "val": val_loss_dict["sum"],
+                    "train": train_loss,
+                    "val": val_loss,
                     "val_mAP": val_mAP,
                 }
             )

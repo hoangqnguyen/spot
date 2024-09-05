@@ -246,6 +246,7 @@ class ActionSpotDataset(Dataset):
             if "kovo" in self._dataset
             else None
         )
+        event_indices = []
 
         for event in video_meta["events"]:
             event_frame = event["frame"]
@@ -263,6 +264,7 @@ class ActionSpotDataset(Dataset):
                     min(self._clip_len, label_idx + self._dilate_len + 1),
                 ):
                     labels[i] = label
+                    event_indices.append(i)
                     if event_xys is not None:
                         event_xys[i] = event.get("xy", [0, 0])
 
@@ -289,15 +291,23 @@ class ActionSpotDataset(Dataset):
             event_xys = out_boxes.data[:, :2] / torch.tensor(
                 [self._crop_dim, self._crop_dim]
             ).reshape(1, 2)
+        
+        event_tf_normed= torch.tensor(event_indices, dtype=torch.float32) / self._clip_len if len(event_indices) > 0 else torch.zeros(0, dtype=torch.float32)
+
+        xy_tf= event_xys[event_indices] if len(event_indices) > 0 else torch.zeros(0, 2, dtype=torch.float32)
+
+        labels_tf = labels[event_indices]
 
         return {
-            "video": video_meta["video"],
+            # "video": video_meta["video"],
             "start": base_idx,
             "end": base_idx + self._clip_len * self._stride,
             "frame": frames,
             "contains_event": int(np.sum(labels) > 0),
             "label": labels,
             "xy": event_xys,
+            "cls": torch.tensor(labels_tf),
+            "tloc": torch.cat([event_tf_normed.unsqueeze(1), xy_tf], dim=1) if len(event_indices) > 0 else torch.zeros(0, 3, dtype=torch.float32),
         }
 
     def __getitem__(self, unused):
