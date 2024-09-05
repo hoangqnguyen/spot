@@ -703,7 +703,7 @@ def evaluate(
     # breakpoint()
     avg_mAP_t = None
     if calc_stats:
-        for fg_threshold in np.arange(0.1, 1, 0.1):
+        for fg_threshold in [.25]:
             # Print the evaluation results
             # print("=== Results on {} (w/o NMS) ===".format(split))
             print("=== Results on {} (FG_THRES={:.2f}) ===".format(split, fg_threshold))
