@@ -106,7 +106,7 @@ def _get_geometric_transforms(crop_dim=224, is_eval=False):
     return transforms.Compose(geometric_transforms)
 
 
-def _get_rgb_transforms(crop_dim=224, is_eval=False):
+def _get_rgb_transforms(is_eval=False):
     if is_eval:
         return transforms.Compose([transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),])
     else:
@@ -204,7 +204,7 @@ class ActionSpotDataset(Dataset):
 
         self._crop_dim = crop_dim
         self._geometric_transform = _get_geometric_transforms(self._crop_dim, is_eval)
-        self._rgb_transform = _get_rgb_transforms(self._crop_dim, is_eval)
+        self._rgb_transform = _get_rgb_transforms(is_eval)
         self._frame_reader = FrameReader(frame_dir, modality)
 
     def _sample_uniform(self):
@@ -391,7 +391,7 @@ class ActionSpotVideoDataset(Dataset):
         self._stride = stride
 
         self._geometric_transform = _get_geometric_transforms(crop_dim, is_eval)
-        self._rgb_transform = _get_rgb_transforms(crop_dim, is_eval)
+        self._rgb_transform = _get_rgb_transforms(is_eval)
 
         # No need to enforce same_transform since the transforms are
         # deterministic
