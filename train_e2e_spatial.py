@@ -481,6 +481,7 @@ class E2EModel(BaseRGBModel):
             for batch_idx, batch in enumerate(pbar):
                 # frame = loader.dataset.load_frame_gpu(batch, self.device)
                 frame = batch["frame"].to(self.device)
+                frame = loader.dataset.apply_gpu_rgb_transform(frame)
                 targets = dict(
                     cls=batch["cls"].to(self.device),
                     tloc=batch["tloc"].to(self.device),

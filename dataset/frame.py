@@ -67,14 +67,14 @@ class FrameReader:
 # Pad the start/end of videos with empty frames
 DEFAULT_PAD_LEN = 5
 
+
 def check_for_nan(img, transform_name):
     if torch.isnan(img[0] if isinstance(img, tuple) else img).any():
         print(f"NaN found after {transform_name}")
     return img
 
-def _get_img_transforms(crop_dim=224, is_eval=False):
-    p = 0.0 if is_eval else 0.25
 
+def _get_geometric_transforms(crop_dim=224, is_eval=False):
     geometric_transforms = []
     if not is_eval:
         geometric_transforms.append(
@@ -82,7 +82,7 @@ def _get_img_transforms(crop_dim=224, is_eval=False):
                 [
                     transforms.RandomCrop((crop_dim, crop_dim)),
                     transforms.RandomResizedCrop((crop_dim, crop_dim)),
-                    transforms.Resize((crop_dim, crop_dim)), # No-op
+                    transforms.Resize((crop_dim, crop_dim)),  # No-op
                 ]
             )
         )
@@ -96,37 +96,41 @@ def _get_img_transforms(crop_dim=224, is_eval=False):
                     transforms.RandomAffine(
                         degrees=(30, 70), translate=(0.1, 0.3), scale=(0.5, 0.75)
                     ),
-                    transforms.Resize((crop_dim, crop_dim)), # No-op
+                    transforms.Resize((crop_dim, crop_dim)),  # No-op
                 ]
             ),
         )
 
     geometric_transforms.append(transforms.Resize((crop_dim, crop_dim)))
 
-    img_transforms = [
-        # ColorJittering
-        transforms.RandomApply(nn.ModuleList([transforms.ColorJitter(hue=0.2)]), p=p),
-        transforms.RandomApply(
-            nn.ModuleList([transforms.ColorJitter(saturation=(0.7, 1.2))]), p=p
-        ),
-        transforms.RandomApply(
-            nn.ModuleList([transforms.ColorJitter(brightness=(0.7, 1.2))]), p=p
-        ),
-        transforms.RandomApply(
-            nn.ModuleList([transforms.ColorJitter(contrast=(0.7, 1.2))]), p=p
-        ),
-        transforms.RandomApply(nn.ModuleList([transforms.GaussianBlur(5)]), p=p),
-        transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
-    ]
-    # return transforms.Compose(geometric_transforms + img_transforms)
+    return transforms.Compose(geometric_transforms)
 
-    return transforms.Compose([
-        transforms.Lambda(lambda img: check_for_nan(img, "Initial")),
-        *geometric_transforms,
-        transforms.Lambda(lambda img: check_for_nan(img, "Geometric Transforms")),
-        *img_transforms,
-        transforms.Lambda(lambda img: check_for_nan(img, "Color Jittering and Normalization")),
-    ])
+
+def _get_rgb_transforms(crop_dim=224, is_eval=False):
+    if is_eval:
+        return transforms.Compose([nn.Identity()])
+    else:
+        return transforms.Compose(
+            [
+                # ColorJittering
+                transforms.RandomApply(
+                    nn.ModuleList([transforms.ColorJitter(hue=0.2)]), p=.25
+                ),
+                transforms.RandomApply(
+                    nn.ModuleList([transforms.ColorJitter(saturation=(0.7, 1.2))]), p=.25
+                ),
+                transforms.RandomApply(
+                    nn.ModuleList([transforms.ColorJitter(brightness=(0.7, 1.2))]), p=.25
+                ),
+                transforms.RandomApply(
+                    nn.ModuleList([transforms.ColorJitter(contrast=(0.7, 1.2))]), p=.25
+                ),
+                transforms.RandomApply(
+                    nn.ModuleList([transforms.GaussianBlur(5)]), p=.25
+                ),
+                transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+            ]
+        )
 
 
 def _print_info_helper(src_file, labels):
@@ -199,7 +203,8 @@ class ActionSpotDataset(Dataset):
         self._mixup = mixup
 
         self._crop_dim = crop_dim
-        self._transform = _get_img_transforms(self._crop_dim, is_eval)
+        self._geometric_transform = _get_geometric_transforms(self._crop_dim, is_eval)
+        self._rgb_transform = _get_rgb_transforms(self._crop_dim, is_eval)
         self._frame_reader = FrameReader(frame_dir, modality)
 
     def _sample_uniform(self):
@@ -277,7 +282,7 @@ class ActionSpotDataset(Dataset):
             randomize=not self._is_eval,
         )  # T, C, H, W
 
-        if self._transform is not None:
+        if self._geometric_transform is not None:
             h, w = frames.shape[-2:]
             scale = torch.tensor([w, h]).reshape(1, 2)
             in_boxes = torch.from_numpy(event_xys) * scale  # T, 2
@@ -287,14 +292,22 @@ class ActionSpotDataset(Dataset):
                 in_boxes, format="XYXY", canvas_size=frames.shape[-2:]
             )
 
-            frames, out_boxes = self._transform(frames, in_boxes)
+            frames, out_boxes = self._geometric_transform(frames, in_boxes)
             event_xys = out_boxes.data[:, :2] / torch.tensor(
                 [self._crop_dim, self._crop_dim]
             ).reshape(1, 2)
-        
-        event_tf_normed= torch.tensor(event_indices, dtype=torch.float32) / self._clip_len if len(event_indices) > 0 else torch.zeros(1, dtype=torch.float32)
 
-        xy_tf = event_xys[event_indices] if len(event_indices) > 0 else torch.zeros(1, 2, dtype=torch.float32)
+        event_tf_normed = (
+            torch.tensor(event_indices, dtype=torch.float32) / self._clip_len
+            if len(event_indices) > 0
+            else torch.zeros(1, dtype=torch.float32)
+        )
+
+        xy_tf = (
+            event_xys[event_indices]
+            if len(event_indices) > 0
+            else torch.zeros(1, 2, dtype=torch.float32)
+        )
 
         labels_tf = labels[event_indices] if len(event_indices) > 0 else [0]
 
@@ -307,7 +320,11 @@ class ActionSpotDataset(Dataset):
             "label": labels,
             "xy": event_xys,
             "cls": torch.tensor(labels_tf),
-            "tloc": torch.cat([event_tf_normed.unsqueeze(1), xy_tf], dim=1) if len(event_indices) > 0 else torch.zeros(1, 3, dtype=torch.float32),
+            "tloc": (
+                torch.cat([event_tf_normed.unsqueeze(1), xy_tf], dim=1)
+                if len(event_indices) > 0
+                else torch.zeros(1, 3, dtype=torch.float32)
+            ),
         }
 
     def __getitem__(self, unused):
@@ -336,6 +353,11 @@ class ActionSpotDataset(Dataset):
 
     def print_info(self):
         _print_info_helper(self._src_file, self._labels)
+
+    def apply_gpu_rgb_transform(self, frames):
+        if self._rgb_transform is not None:
+            frames = self._rgb_transform(frames)
+        return frames
 
 
 class ActionSpotVideoDataset(Dataset):
@@ -368,7 +390,8 @@ class ActionSpotVideoDataset(Dataset):
         self._clip_len = clip_len
         self._stride = stride
 
-        self._transform = _get_img_transforms(crop_dim, is_eval)
+        self._geometric_transform = _get_geometric_transforms(crop_dim, is_eval)
+        self._rgb_transform = _get_rgb_transforms(crop_dim, is_eval)
 
         # No need to enforce same_transform since the transforms are
         # deterministic
@@ -390,6 +413,12 @@ class ActionSpotVideoDataset(Dataset):
                 has_clip = True
                 self._clips.append((l["video"], i))
             assert has_clip, l
+
+    
+    def apply_gpu_rgb_transform(self, frames):
+        if self._rgb_transform is not None:
+            frames = self._rgb_transform(frames)
+        return frames
 
     def __len__(self):
         return len(self._clips)
