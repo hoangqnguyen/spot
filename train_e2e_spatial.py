@@ -333,7 +333,7 @@ class E2EModel(BaseRGBModel):
                 make_temporal_shift(features, clip_len, is_gsm=True)
                 self._require_clip_len = clip_len
 
-            self._features = features
+            self.backbone = features
             self._feat_dim = feat_dim
 
             if "gru" in temporal_arch:
@@ -401,7 +401,7 @@ class E2EModel(BaseRGBModel):
                     x = F.pad(x, (0,) * 7 + (self._require_clip_len - true_clip_len,))
                     clip_len = self._require_clip_len
 
-            im_feat = self._features(x.view(-1, channels, height, width)).reshape(
+            im_feat = self.backbone(x.view(-1, channels, height, width)).reshape(
                 batch_size, clip_len, self._feat_dim
             )
 
@@ -420,7 +420,7 @@ class E2EModel(BaseRGBModel):
         def print_stats(self):
             print(f"Model params:{sum(p.numel() for p in self.parameters()):,}")
             print(
-                f"CNN features:{sum(p.numel() for p in self._features.parameters()):,}"
+                f"CNN features:{sum(p.numel() for p in self.backbone.parameters()):,}"
             )
             print(
                 f"Temporal Head:{sum(p.numel() for p in self._pred_fine.parameters()):,}"
@@ -866,23 +866,27 @@ def get_num_train_workers(args):
 
 
 def get_lr_scheduler(args, optimizer, num_steps_per_epoch):
-    cosine_epochs = args.num_epochs - args.warm_up_epochs
-    print(
-        "Using Linear Warmup ({}) + Cosine Annealing LR ({})".format(
-            args.warm_up_epochs, cosine_epochs
-        )
-    )
-    return args.num_epochs, ChainedScheduler(
-        [
-            LinearLR(
-                optimizer,
-                start_factor=0.01,
-                end_factor=1.0,
-                total_iters=args.warm_up_epochs * num_steps_per_epoch,
-            ),
-            CosineAnnealingLR(optimizer, num_steps_per_epoch * cosine_epochs),
-        ]
-    )
+    # cosine_epochs = args.num_epochs - args.warm_up_epochs
+    # print(
+    #     "Using Linear Warmup ({}) + Cosine Annealing LR ({})".format(
+    #         args.warm_up_epochs, cosine_epochs
+    #     )
+    # )
+    # return args.num_epochs, ChainedScheduler(
+    #     [
+    #         LinearLR(
+    #             optimizer,
+    #             start_factor=0.01,
+    #             end_factor=1.0,
+    #             total_iters=args.warm_up_epochs * num_steps_per_epoch,
+    #         ),
+    #         CosineAnnealingLR(optimizer, num_steps_per_epoch * cosine_epochs),
+    #     ]
+    # )
+
+
+    # dont any scheduler for now
+    return args.num_epochs, torch.optim.lr_scheduler.ConstantLR(optimizer, factor=1.0)
 
 
 def main(args):

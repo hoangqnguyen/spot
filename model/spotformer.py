@@ -6,7 +6,6 @@ from positional_encodings.torch_encodings import (
     PositionalEncoding1D,
     Summer,
 )
-
 from contextlib import nullcontext
 
 
@@ -58,7 +57,7 @@ class SpotFormer(nn.Module):
 
 
 @torch.no_grad()
-def hungarian_matcher(outputs, targets, cost_weights=(1.0, 1.0)):
+def hungarian_matcher(outputs, targets, cost_weights=(1.0, 1.0), apply_sigmoid=True):
     # breakpoint()
     w_cost_tloc, w_cost_class = cost_weights
     bs, num_queries = outputs["pred_logits"].shape[:2]
@@ -67,6 +66,8 @@ def hungarian_matcher(outputs, targets, cost_weights=(1.0, 1.0)):
         outputs["pred_logits"].flatten(0, 1).softmax(-1)
     )  # [batch_size * num_queries, num_classes]
     out_tloc = outputs["pred_tloc"].flatten(0, 1)  # [batch_size * num_queries, 4]
+    if apply_sigmoid:
+        out_tloc = out_tloc.sigmoid()
 
     # Also concat the target labels and boxes
     tgt_ids = targets["cls"].flatten()
@@ -79,8 +80,11 @@ def hungarian_matcher(outputs, targets, cost_weights=(1.0, 1.0)):
     # breakpoint()
     C = w_cost_tloc * cost_tloc + w_cost_class * cost_class
     C = C.view(bs, num_queries, -1).cpu()
-    sizes = [v.shape[0] for v in targets["cls"]]
-    indices = [linear_sum_assignment(c[i]) for i, c in enumerate(C.split(sizes, -1))]
+    try:
+        sizes = [v.shape[0] for v in targets["cls"]]
+        indices = [linear_sum_assignment(c[i]) for i, c in enumerate(C.split(sizes, -1))]
+    except:
+        breakpoint()
     return [
         (torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64))
         for i, j in indices
@@ -116,9 +120,7 @@ def calc_loss_labels(outputs, targets, indices, num_classes, fg_weight=5.0):
 
     # print(f"{src_logits.shape=}, {num_classes=}, {target_classes.max()=}, {weights=}")
 
-    loss_ce = F.cross_entropy(
-        src_logits.transpose(1, 2), target_classes, weight=weights
-    )
+    loss_ce = F.cross_entropy(src_logits.transpose(1, 2), target_classes)
 
     return loss_ce
 

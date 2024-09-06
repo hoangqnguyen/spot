@@ -30,11 +30,11 @@ class ABCModel:
 class BaseRGBModel(ABCModel):
 
     def get_optimizer(self, opt_args):
-        base_lr = opt_args.get('lr', 1e-3)
-        pred_loc_lr = base_lr 
+        base_lr = opt_args.get('lr', 1e-4)
+        backbone_lr = base_lr / 10.0
 
         param_groups = [
-                {'params': param, 'lr': pred_loc_lr if '_pred_loc' in name else base_lr}
+                {'params': param, 'lr': backbone_lr if 'backbone' in name else base_lr}
                 for name, param in self._model.named_parameters()
             ]
         return torch.optim.AdamW(param_groups), \

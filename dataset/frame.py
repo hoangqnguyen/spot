@@ -292,11 +292,11 @@ class ActionSpotDataset(Dataset):
                 [self._crop_dim, self._crop_dim]
             ).reshape(1, 2)
         
-        event_tf_normed= torch.tensor(event_indices, dtype=torch.float32) / self._clip_len if len(event_indices) > 0 else torch.zeros(0, dtype=torch.float32)
+        event_tf_normed= torch.tensor(event_indices, dtype=torch.float32) / self._clip_len if len(event_indices) > 0 else torch.zeros(1, dtype=torch.float32)
 
-        xy_tf= event_xys[event_indices] if len(event_indices) > 0 else torch.zeros(0, 2, dtype=torch.float32)
+        xy_tf = event_xys[event_indices] if len(event_indices) > 0 else torch.zeros(1, 2, dtype=torch.float32)
 
-        labels_tf = labels[event_indices]
+        labels_tf = labels[event_indices] if len(event_indices) > 0 else [0]
 
         return {
             # "video": video_meta["video"],
@@ -307,7 +307,7 @@ class ActionSpotDataset(Dataset):
             "label": labels,
             "xy": event_xys,
             "cls": torch.tensor(labels_tf),
-            "tloc": torch.cat([event_tf_normed.unsqueeze(1), xy_tf], dim=1) if len(event_indices) > 0 else torch.zeros(0, 3, dtype=torch.float32),
+            "tloc": torch.cat([event_tf_normed.unsqueeze(1), xy_tf], dim=1) if len(event_indices) > 0 else torch.zeros(1, 3, dtype=torch.float32),
         }
 
     def __getitem__(self, unused):
