@@ -88,15 +88,13 @@ def _get_geometric_transforms(crop_dim=224, is_eval=False):
         )
         geometric_transforms.append(
             transforms.RandomChoice(
-                [
-                    transforms.RandomHorizontalFlip(p=1.0),
-                    transforms.RandomZoomOut(p=1.0),
-                    transforms.RandomPerspective(distortion_scale=0.6, p=1.0),
-                    transforms.RandomRotation(degrees=(0, 45)),
-                    transforms.RandomAffine(
-                        degrees=(30, 70), translate=(0.1, 0.3), scale=(0.5, 0.75)
-                    ),
-                    transforms.Resize((crop_dim, crop_dim)),  # No-op
+                [                 
+                    transforms.Compose([transforms.RandomHorizontalFlip(p=1.0),transforms.Lambda(lambda img: check_for_nan(img, "RandomHorizontalFlip"))] ),
+                    transforms.Compose([transforms.RandomZoomOut(p=1.0),transforms.Lambda(lambda img: check_for_nan(img, "RandomZoomOut"))] ),
+                    transforms.Compose([transforms.RandomPerspective(distortion_scale=0.6, p=1.0),transforms.Lambda(lambda img: check_for_nan(img, "RandomPerspective"))] ),
+                    transforms.Compose([transforms.RandomRotation(degrees=(0, 45)),transforms.Lambda(lambda img: check_for_nan(img, "RandomRotation"))] ),
+                    transforms.Compose([transforms.RandomAffine( degrees=(30, 70), translate=(0.1, 0.3), scale=(0.5, 0.75)),transforms.Lambda(lambda img: check_for_nan(img, "RandomAffine"))] ),
+                    transforms.Compose([transforms.Resize((crop_dim, crop_dim)),transforms.Lambda(lambda img: check_for_nan(img, "Resize"))] ),
                 ]
             ),
         )
