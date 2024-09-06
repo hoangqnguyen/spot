@@ -433,8 +433,8 @@ class ActionSpotVideoDataset(Dataset):
             stride=self._stride,
         )
 
-        if self._transform is not None:
-            frames = self._transform(frames)
+        if self._geometric_transform is not None:
+            frames = self._geometric_transform(frames)
 
         if self._flip:
             frames = torch.stack((frames, frames.flip(-1)), dim=0)

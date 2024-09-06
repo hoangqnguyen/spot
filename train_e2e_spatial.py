@@ -980,8 +980,7 @@ def main(args):
                 acc_grad_iter=args.acc_grad_iter,
             )
             val_loss = model.epoch(val_loader, acc_grad_iter=args.acc_grad_iter)
-            print("Train loss:", train_loss)
-            print("Val loss:", val_loss)
+            print(f"[Epoch {epoch} / {args.num_epochs}] Train loss: {train_loss:.4f} Val loss: {val_loss:.4f}")
 
             # print("\n",
             #     tabulate(
