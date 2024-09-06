@@ -108,7 +108,7 @@ def _get_geometric_transforms(crop_dim=224, is_eval=False):
 
 def _get_rgb_transforms(crop_dim=224, is_eval=False):
     if is_eval:
-        return transforms.Compose([nn.Identity()])
+        return transforms.Compose([transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),])
     else:
         return transforms.Compose(
             [
