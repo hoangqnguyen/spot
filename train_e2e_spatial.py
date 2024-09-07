@@ -67,6 +67,8 @@ def get_args():
             "rny008",
             # From timm
             "convnextt",
+            "regnety_008",
+            "resnet50"
         ],
         help="CNN architecture for feature extraction",
     )
@@ -250,10 +252,11 @@ class E2EModel(BaseRGBModel):
             num_heads=8,
             num_layers=6,
             dropout=0.1,
+            cnn_backbone="regnety_008",
         ):
             super().__init__()
             self._pred_fine = SpotFormer(
-                num_classes, num_queries=num_queries, hidden_dim=hidden_dim, num_heads=num_heads, num_layers=num_layers, dropout=dropout)
+                num_classes, num_queries=num_queries, hidden_dim=hidden_dim, num_heads=num_heads, num_layers=num_layers, dropout=dropout, cnn_model=cnn_backbone)
 
         def forward(self, x):            
             return self._pred_fine(x)
@@ -268,6 +271,7 @@ class E2EModel(BaseRGBModel):
         num_queries=15,
         device="cuda",
         multi_gpu=False,
+        cnn_backbone="resnet50",
     ):
         self.device = device
         self._multi_gpu = multi_gpu
@@ -275,6 +279,7 @@ class E2EModel(BaseRGBModel):
             num_classes,
             num_queries=num_queries,
             hidden_dim=hidden_dim,
+            cnn_backbone=cnn_backbone,
         )
         # self._model = torch.compile(self._model)
         self._model.print_stats()
@@ -740,6 +745,7 @@ def main(args):
         hidden_dim=args.hidden_dim,
         num_queries=args.num_queries,
         multi_gpu=args.gpu_parallel,
+        cnn_backbone=args.feature_arch,
     )
 
     if not args.eval_only:

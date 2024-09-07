@@ -37,6 +37,7 @@ class BaseRGBModel(ABCModel):
                 {'params': param, 'lr': backbone_lr if 'backbone' in name else base_lr}
                 for name, param in self._model.named_parameters()
             ]
+        
         return torch.optim.AdamW(param_groups), \
             torch.cuda.amp.GradScaler() if self.device == 'cuda' else None
 

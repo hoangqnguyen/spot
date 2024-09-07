@@ -31,25 +31,37 @@ class SpotFormer(nn.Module):
         self.num_heads = num_heads
         self.num_layers = num_layers
 
-        self.encoder = CNNEncoder(cnn_model, out_c=hidden_dim)
-        self.decoder = nn.TransformerDecoder(
-            nn.TransformerDecoderLayer(
-                d_model=hidden_dim,
-                nhead=num_heads,
-                dim_feedforward=2048,
-                dropout=dropout,
-                batch_first=True,
-            ),
-            num_layers=num_layers,
+        self.backbone = CNNEncoder(cnn_model, out_c=hidden_dim)
+        # self.decoder = nn.TransformerDecoder(
+        #     nn.TransformerDecoderLayer(
+        #         d_model=hidden_dim,
+        #         nhead=num_heads,
+        #         dim_feedforward=2048,
+        #         dropout=dropout,
+        #         batch_first=True,
+        #     ),
+        #     num_layers=num_layers,
+        # )
+        self.transformer = nn.Transformer(
+            d_model=hidden_dim,
+            nhead=num_heads,
+            num_encoder_layers=num_layers,
+            num_decoder_layers=num_layers,
+            dim_feedforward=2048,
+            dropout=dropout,
+            batch_first=True,
         )
         self.class_embed = nn.Linear(hidden_dim, num_classes)
         self.query_embed = nn.Embedding(num_queries, hidden_dim)
         self.tloc_embed = nn.Linear(hidden_dim, 3)
 
     def forward(self, x):
-        x = self.encoder(x)  # B, T, hidden_dim
-        x = self.decoder(
-            tgt=self.query_embed.weight.unsqueeze(0).repeat(x.shape[0], 1, 1), memory=x
+        x = self.backbone(x)  # B, T, hidden_dim
+        # x = self.decoder(
+        #     tgt=self.query_embed.weight.unsqueeze(0).repeat(x.shape[0], 1, 1), memory=x
+        # )
+        x = self.transformer(
+            tgt=self.query_embed.weight.unsqueeze(0).repeat(x.shape[0], 1, 1), src=x
         )
         return {
             "pred_logits": self.class_embed(x),
@@ -66,6 +78,10 @@ class CNNEncoder(nn.Module):
         if model_name == "regnety_008":
             self.backbone = timm.create_model(
                 "regnety_008", pretrained=True, num_classes=0, global_pool=""
+            )
+        elif model_name == "resnet50":
+            self.backbone = timm.create_model(
+                "resnet50", pretrained=True, num_classes=0, global_pool=""
             )
         else:
             raise ValueError(f"Unknown model name: {model_name}")
