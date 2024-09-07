@@ -9,6 +9,8 @@ from positional_encodings.torch_encodings import (
 )
 from contextlib import nullcontext
 from einops import rearrange
+import time
+import torch
 
 
 class SpotFormer(nn.Module):
@@ -34,7 +36,7 @@ class SpotFormer(nn.Module):
             nn.TransformerDecoderLayer(
                 d_model=hidden_dim,
                 nhead=num_heads,
-                dim_feedforward=hidden_dim,
+                dim_feedforward=2048,
                 dropout=dropout,
                 batch_first=True,
             ),
@@ -234,6 +236,9 @@ def predict(model, seq, use_amp=False, device="cuda"):
 
 
 if __name__ == "__main__":
+    # Set device to CUDA if available
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     batch_size = 8
     num_classes = 6
     num_queries = 20
@@ -243,11 +248,11 @@ if __name__ == "__main__":
 
     model = SpotFormer(
         num_classes=num_classes + 1, num_queries=num_queries, cnn_model="regnety_008", hidden_dim=512
-    ).cuda()
+    ).to(device)
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Model has {total_params:,} total parameters.")
 
-    x = torch.randn(batch_size, sequence_length, 3, 224, 224).cuda()
+    x = torch.randn(batch_size, sequence_length, 3, 224, 224).to(device)
     y = dict(
         cls=torch.randint(
             0,
@@ -256,14 +261,25 @@ if __name__ == "__main__":
                 batch_size,
                 num_events,
             ),
-        ).cuda(),
-        tloc=torch.randn(batch_size, num_events, 3).cuda(),
+        ).to(device),
+        tloc=torch.randn(batch_size, num_events, 3).to(device),
     )
 
+    print("Forward pass")
+    start_time = time.time()
     out = model(x)
+    torch.cuda.synchronize()  # Synchronize CUDA operations
+    end_time = time.time()
     print(out["pred_logits"].shape, out["pred_tloc"].shape)
+    print(f"Forward pass took {end_time - start_time:.4f} seconds")
 
     calc_loss = calc_loss(out, y, num_classes)
     print(calc_loss)
+    print("Backward pass")
+    start_time = time.time()
+    calc_loss["loss"].backward()
+    torch.cuda.synchronize()  # Synchronize CUDA operations
+    end_time = time.time()
+    print(f"Backward pass took {end_time - start_time:.4f} seconds")
 
     # preds = predict(model, x)
