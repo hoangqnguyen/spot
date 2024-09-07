@@ -1,12 +1,14 @@
 import torch
+import timm
 from torch import nn
 import torch.nn.functional as F
 from scipy.optimize import linear_sum_assignment
 from positional_encodings.torch_encodings import (
-    PositionalEncoding1D,
+    PositionalEncoding3D,
     Summer,
 )
 from contextlib import nullcontext
+from einops import rearrange
 
 
 class SpotFormer(nn.Module):
@@ -14,7 +16,7 @@ class SpotFormer(nn.Module):
         self,
         num_classes,
         num_queries,
-        input_dim,
+        cnn_model="regnety_008",
         hidden_dim=256,
         num_heads=8,
         num_layers=6,
@@ -23,13 +25,11 @@ class SpotFormer(nn.Module):
         super(SpotFormer, self).__init__()
         self.num_classes = num_classes
         self.num_queries = num_queries
-        self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.num_heads = num_heads
         self.num_layers = num_layers
 
-        self.encoder = nn.Linear(input_dim, hidden_dim)
-        self.pos_enc = Summer(PositionalEncoding1D(hidden_dim))
+        self.encoder = CNNEncoder(cnn_model, out_c=hidden_dim)
         self.decoder = nn.TransformerDecoder(
             nn.TransformerDecoderLayer(
                 d_model=hidden_dim,
@@ -46,7 +46,6 @@ class SpotFormer(nn.Module):
 
     def forward(self, x):
         x = self.encoder(x)  # B, T, hidden_dim
-        x = self.pos_enc(x)
         x = self.decoder(
             tgt=self.query_embed.weight.unsqueeze(0).repeat(x.shape[0], 1, 1), memory=x
         )
@@ -54,6 +53,38 @@ class SpotFormer(nn.Module):
             "pred_logits": self.class_embed(x),
             "pred_tloc": self.tloc_embed(x),
         }
+
+
+class CNNEncoder(nn.Module):
+    def __init__(self, model_name, out_c):
+        super(CNNEncoder, self).__init__()
+        self.model_name = model_name
+        self.out_c = out_c
+
+        if model_name == "regnety_008":
+            self.backbone = timm.create_model(
+                "regnety_008", pretrained=True, num_classes=0, global_pool=""
+            )
+        else:
+            raise ValueError(f"Unknown model name: {model_name}")
+        self.out_proj = nn.Conv2d(self.backbone.num_features, out_c, 1)
+        self.cnn_features = self.backbone.num_features
+        self.pos_xyt_encoding = Summer(PositionalEncoding3D(self.cnn_features))
+
+    def forward(self, x):
+        """
+        Forward pass of the model.
+        Args:
+            x (torch.Tensor): Input tensor of shape (batch_size, time_steps, channels, height, width).
+        Returns:
+            torch.Tensor: Output tensor of shape (batch_size, height, width, time_steps, channels).
+        """
+
+        bs, t = x.shape[:2]
+        x = self.backbone(x.flatten(0, 1))
+        x = self.out_proj(x)
+        x = self.pos_xyt_encoding(rearrange(x, "(b t) c h w -> b h w t c", b=bs))
+        return x.flatten(1, 3)
 
 
 @torch.no_grad()
@@ -82,7 +113,9 @@ def hungarian_matcher(outputs, targets, cost_weights=(1.0, 1.0), apply_sigmoid=T
     C = C.view(bs, num_queries, -1).cpu()
     try:
         sizes = [v.shape[0] for v in targets["cls"]]
-        indices = [linear_sum_assignment(c[i]) for i, c in enumerate(C.split(sizes, -1))]
+        indices = [
+            linear_sum_assignment(c[i]) for i, c in enumerate(C.split(sizes, -1))
+        ]
     except:
         breakpoint()
     return [
@@ -205,16 +238,16 @@ if __name__ == "__main__":
     num_classes = 6
     num_queries = 20
     input_dim = 386
-    sequence_length = 64
+    sequence_length = 60
     num_events = 5
 
     model = SpotFormer(
-        num_classes=num_classes + 1, num_queries=num_queries, input_dim=input_dim
+        num_classes=num_classes + 1, num_queries=num_queries, cnn_model="regnety_008", hidden_dim=512
     ).cuda()
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Model has {total_params:,} total parameters.")
 
-    x = torch.randn(batch_size, sequence_length, input_dim).cuda()
+    x = torch.randn(batch_size, sequence_length, 3, 224, 224).cuda()
     y = dict(
         cls=torch.randint(
             0,
@@ -233,5 +266,4 @@ if __name__ == "__main__":
     calc_loss = calc_loss(out, y, num_classes)
     print(calc_loss)
 
-    preds = predict(model, x)
-    breakpoint()
+    # preds = predict(model, x)

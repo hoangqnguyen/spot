@@ -31,7 +31,7 @@ class BaseRGBModel(ABCModel):
 
     def get_optimizer(self, opt_args):
         base_lr = opt_args.get('lr', 1e-4)
-        backbone_lr = base_lr / 10.0
+        backbone_lr = opt_args.get('lr_backbone', 1e-5)
 
         param_groups = [
                 {'params': param, 'lr': backbone_lr if 'backbone' in name else base_lr}

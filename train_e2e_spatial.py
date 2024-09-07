@@ -61,34 +61,18 @@ def get_args():
         choices=[
             # From torchvision
             "rn18",
-            "rn18_tsm",
-            "rn18_gsm",
             "rn50",
-            "rn50_tsm",
-            "rn50_gsm",
             # From timm (following its naming conventions)
             "rny002",
-            "rny002_tsm",
-            "rny002_gsm",
             "rny008",
-            "rny008_tsm",
-            "rny008_gsm",
             # From timm
             "convnextt",
-            "convnextt_tsm",
-            "convnextt_gsm",
         ],
         help="CNN architecture for feature extraction",
     )
-    parser.add_argument(
-        "-t",
-        "--temporal_arch",
-        type=str,
-        default="gru",
-        # choices=['', 'gru', 'deeper_gru', 'mstcn', 'asformer'],
-        help="Spotting architecture, after spatial pooling",
-    )
 
+    parser.add_argument("--hidden_dim", type=int, default=256)
+    parser.add_argument("--num_queries", type=int, default=15)
     parser.add_argument("--clip_len", type=int, default=100)
     parser.add_argument("--crop_dim", type=int, default=224)
     parser.add_argument("--batch_size", type=int, default=8)
@@ -99,7 +83,8 @@ def get_args():
     parser.add_argument("--warm_up_epochs", type=int, default=3)
     parser.add_argument("--num_epochs", type=int, default=50)
 
-    parser.add_argument("-lr", "--learning_rate", type=float, default=0.001)
+    parser.add_argument("-lr", "--learning_rate", type=float, default=1e-3)
+    parser.add_argument("-lrb", "--learning_rate_backbone", type=float, default=1e-5)
     parser.add_argument(
         "-s",
         "--save_dir",
@@ -260,196 +245,36 @@ class E2EModel(BaseRGBModel):
         def __init__(
             self,
             num_classes,
-            feature_arch,
-            temporal_arch,
-            clip_len,
-            modality,
-            predict_location=False,
+            num_queries=15,
+            hidden_dim=256,
+            num_heads=8,
+            num_layers=6,
+            dropout=0.1,
         ):
             super().__init__()
-            is_rgb = modality == "rgb"
-            in_channels = {"flow": 2, "bw": 1, "rgb": 3}[modality]
+            self._pred_fine = SpotFormer(
+                num_classes, num_queries=num_queries, hidden_dim=hidden_dim, num_heads=num_heads, num_layers=num_layers, dropout=dropout)
 
-            if feature_arch.startswith(("rn18", "rn50")):
-                resnet_name = feature_arch.split("_")[0].replace("rn", "resnet")
-                features = getattr(torchvision.models, resnet_name)(pretrained=is_rgb)
-                feat_dim = features.fc.in_features
-                features.fc = nn.Identity()
-                # import torchsummary
-                # print(torchsummary.summary(features.to('cuda'), (3, 224, 224)))
-
-                # Flow has only two input channels
-                if not is_rgb:
-                    # FIXME: args maybe wrong for larger resnet
-                    features.conv1 = nn.Conv2d(
-                        in_channels,
-                        64,
-                        kernel_size=(7, 7),
-                        stride=(2, 2),
-                        padding=(3, 3),
-                        bias=False,
-                    )
-
-            elif feature_arch.startswith(("rny002", "rny008")):
-                features = timm.create_model(
-                    {
-                        "rny002": "regnety_002",
-                        "rny008": "regnety_008",
-                    }[feature_arch.rsplit("_", 1)[0]],
-                    pretrained=is_rgb,
-                )
-                feat_dim = features.head.fc.in_features
-                features.head.fc = nn.Identity()
-
-                if not is_rgb:
-                    features.stem.conv = nn.Conv2d(
-                        in_channels,
-                        32,
-                        kernel_size=(3, 3),
-                        stride=(2, 2),
-                        padding=(1, 1),
-                        bias=False,
-                    )
-
-            elif "convnextt" in feature_arch:
-                features = timm.create_model("convnext_tiny", pretrained=is_rgb)
-                feat_dim = features.head.fc.in_features
-                features.head.fc = nn.Identity()
-
-                if not is_rgb:
-                    features.stem[0] = nn.Conv2d(
-                        in_channels, 96, kernel_size=4, stride=4
-                    )
-
-            else:
-                raise NotImplementedError(feature_arch)
-
-            # Add Temporal Shift Modules
-            self._require_clip_len = -1
-            if feature_arch.endswith("_tsm"):
-                make_temporal_shift(features, clip_len, is_gsm=False)
-                self._require_clip_len = clip_len
-            elif feature_arch.endswith("_gsm"):
-                make_temporal_shift(features, clip_len, is_gsm=True)
-                self._require_clip_len = clip_len
-
-            self.backbone = features
-            self._feat_dim = feat_dim
-
-            if "gru" in temporal_arch:
-                hidden_dim = feat_dim
-                if hidden_dim > MAX_GRU_HIDDEN_DIM:
-                    hidden_dim = MAX_GRU_HIDDEN_DIM
-                    print(
-                        "Clamped GRU hidden dim: {} -> {}".format(feat_dim, hidden_dim)
-                    )
-                if temporal_arch in ("gru", "deeper_gru"):
-                    self._pred_fine = GRUPrediction(
-                        feat_dim,
-                        num_classes,
-                        hidden_dim,
-                        num_layers=3 if temporal_arch[0] == "d" else 1,
-                    )
-                else:
-                    raise NotImplementedError(temporal_arch)
-            elif temporal_arch == "mstcn":
-                self._pred_fine = TCNPrediction(feat_dim, num_classes, 3)
-            elif temporal_arch == "asformer":
-                self._pred_fine = ASFormerPrediction(feat_dim, num_classes, 3)
-            elif temporal_arch == "":
-                self._pred_fine = FCPrediction(feat_dim, num_classes)
-            elif temporal_arch == "tf_dec":
-                self._pred_fine = SpotFormer(
-                    num_classes, num_queries=20, input_dim=feat_dim, hidden_dim=256, num_heads=8, num_layers=6, dropout=0.1
-                )
-                # fc = MLP(hidden_dim, hidden_dim, num_classes, 3)  # final classifier
-
-                # # put everything together
-                # self._pred_fine = nn.Sequential(down_projection, pos_enc, encoder, fc)
-
-            elif temporal_arch == "mamba_1":
-                from mamba_ssm import Mamba
-
-                hidden_dim = 1024
-                down_projection = nn.Linear(feat_dim, hidden_dim)
-                mamba = Mamba(
-                    # This module uses roughly 3 * expand * d_model^2 parameters
-                    d_model=hidden_dim,  # Model dimension d_model
-                    d_state=16,  # SSM state expansion factor
-                    d_conv=4,  # Local convolution width
-                    expand=2,  # Block expansion factor
-                ).to("cuda")
-
-                fc = MLP(hidden_dim, hidden_dim, num_classes, 3)
-                self._pred_fine = nn.Sequential(down_projection, mamba, fc)
-
-            else:
-                raise NotImplementedError(temporal_arch)
-
-
-        def forward(self, x):
-            batch_size, true_clip_len, channels, height, width = x.shape
-            # print(x.shape)
-
-            clip_len = true_clip_len
-            if self._require_clip_len > 0:
-                # TSM module requires clip len to be known
-                assert (
-                    true_clip_len <= self._require_clip_len
-                ), "Expected {}, got {}".format(self._require_clip_len, true_clip_len)
-                if true_clip_len < self._require_clip_len:
-                    x = F.pad(x, (0,) * 7 + (self._require_clip_len - true_clip_len,))
-                    clip_len = self._require_clip_len
-
-            im_feat = self.backbone(x.view(-1, channels, height, width)).reshape(
-                batch_size, clip_len, self._feat_dim
-            )
-
-            if true_clip_len != clip_len:
-                # Undo padding
-                im_feat = im_feat[:, :true_clip_len, :]
-            
-            return self._pred_fine(im_feat)
-
-            # loc_feat = None
-            # if self._predict_location:
-            #     loc_feat = self._pred_loc(im_feat)
-
-            # return {"im_feat": self._pred_fine(im_feat), "loc_feat": loc_feat, "cnn_feat": im_feat}
+        def forward(self, x):            
+            return self._pred_fine(x)
 
         def print_stats(self):
             print(f"Model params:{sum(p.numel() for p in self.parameters()):,}")
-            print(
-                f"CNN features:{sum(p.numel() for p in self.backbone.parameters()):,}"
-            )
-            print(
-                f"Temporal Head:{sum(p.numel() for p in self._pred_fine.parameters()):,}"
-            )
-            if hasattr(self, "_pred_loc"):
-                print(
-                    f"Spatial Head:{sum(p.numel() for p in self._pred_loc.parameters()):,}"
-                )
 
     def __init__(
         self,
         num_classes,
-        feature_arch,
-        temporal_arch,
-        clip_len,
-        modality,
+        hidden_dim=256,
+        num_queries=15,
         device="cuda",
-        predict_location=False,
         multi_gpu=False,
     ):
         self.device = device
         self._multi_gpu = multi_gpu
         self._model = E2EModel.Impl(
             num_classes,
-            feature_arch,
-            temporal_arch,
-            clip_len,
-            modality,
-            predict_location,
+            num_queries=num_queries,
+            hidden_dim=hidden_dim,
         )
         # self._model = torch.compile(self._model)
         self._model.print_stats()
@@ -842,7 +667,6 @@ def store_config(file_path, args, num_epochs, classes):
         "num_classes": len(classes),
         "modality": args.modality,
         "feature_arch": args.feature_arch,
-        "temporal_arch": args.temporal_arch,
         "clip_len": args.clip_len,
         "batch_size": args.batch_size,
         "crop_dim": args.crop_dim,
@@ -913,12 +737,9 @@ def main(args):
 
     model = E2EModel(
         len(classes) + 1,
-        args.feature_arch,
-        args.temporal_arch,
-        clip_len=args.clip_len,
-        modality=args.modality,
+        hidden_dim=args.hidden_dim,
+        num_queries=args.num_queries,
         multi_gpu=args.gpu_parallel,
-        predict_location=args.predict_location,
     )
 
     if not args.eval_only:
@@ -948,7 +769,7 @@ def main(args):
             collate_fn=custom_collate_fn,
         )
 
-        optimizer, scaler = model.get_optimizer({"lr": args.learning_rate})
+        optimizer, scaler = model.get_optimizer({"lr": args.learning_rate, "lr_backbone": args.learning_rate_backbone})
 
         # Warmup schedule
         num_steps_per_epoch = len(train_loader) // args.acc_grad_iter
