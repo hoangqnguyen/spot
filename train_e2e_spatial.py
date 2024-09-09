@@ -331,13 +331,10 @@ class E2EModel(BaseRGBModel):
 
                 pbar.set_postfix(
                     {
-                        "loss": loss.detach().item()
+                        "loss": epoch_loss / (batch_idx + 1),
                     }
                 )
-
-        # return {
-        #     "sum": epoch_loss / len(loader)
-        # }
+                
         return epoch_loss / len(loader)
 
     def predict(self, seq, use_amp=False):

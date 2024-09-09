@@ -139,6 +139,19 @@ class ConvTransformer(nn.Module):
             tgt = layer(tgt, src)
         return self.ln_f(tgt)
 
+def predictor(in_dim, hidden_dim, out_dim, n_layers=3, dropout=0.1):
+    layers = []
+    for layer_idx in range(n_layers):
+        layers.extend(
+            [
+                nn.Linear(hidden_dim if layer_idx > 0 else in_dim, hidden_dim),
+                nn.GELU(),
+                nn.Dropout(dropout),
+            ]
+        )
+    layers.append(nn.Linear(hidden_dim, out_dim))
+    return nn.Sequential(*layers)
+
 
 class SpotFormer(nn.Module):
     def __init__(
@@ -167,8 +180,8 @@ class SpotFormer(nn.Module):
             max_downsample_factor=max_downsample_factor,
         )
         self.query_embed = nn.Embedding(num_queries, hidden_dim)
-        self.class_embed = nn.Linear(hidden_dim, num_classes)
-        self.tloc_embed = nn.Linear(hidden_dim, 3)
+        self.class_embed = predictor(hidden_dim, hidden_dim * 2, num_classes)
+        self.tloc_embed = predictor(hidden_dim, hidden_dim * 2, 3)
 
     def forward(self, x):
         x = self.backbone(x)  # B, T, hidden_dim
