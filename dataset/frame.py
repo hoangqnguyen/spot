@@ -88,13 +88,24 @@ def _get_geometric_transforms(crop_dim=224, is_eval=False):
         )
         geometric_transforms.append(
             transforms.RandomChoice(
-                [                 
-                    transforms.Compose([transforms.RandomHorizontalFlip(p=1.0),transforms.Lambda(lambda img: check_for_nan(img, "RandomHorizontalFlip"))] ),
-                    transforms.Compose([transforms.RandomZoomOut(p=1.0),transforms.Lambda(lambda img: check_for_nan(img, "RandomZoomOut"))] ),
-                    # transforms.Compose([transforms.RandomPerspective(distortion_scale=0.6, p=1.0),transforms.Lambda(lambda img: check_for_nan(img, "RandomPerspective"))] ),
-                    transforms.Compose([transforms.RandomRotation(degrees=(0, 45)),transforms.Lambda(lambda img: check_for_nan(img, "RandomRotation"))] ),
-                    transforms.Compose([transforms.RandomAffine( degrees=(30, 70), translate=(0.1, 0.3), scale=(0.5, 0.75)),transforms.Lambda(lambda img: check_for_nan(img, "RandomAffine"))] ),
-                    transforms.Compose([transforms.Resize((crop_dim, crop_dim)),transforms.Lambda(lambda img: check_for_nan(img, "Resize"))] ),
+                [
+                    ## ONLY FOR DEBUGGING
+                    # transforms.Compose([transforms.RandomHorizontalFlip(p=1.0),transforms.Lambda(lambda img: check_for_nan(img, "RandomHorizontalFlip"))] ),
+                    # transforms.Compose([transforms.RandomZoomOut(p=1.0),transforms.Lambda(lambda img: check_for_nan(img, "RandomZoomOut"))] ),
+                    # # transforms.Compose([transforms.RandomPerspective(distortion_scale=0.6, p=1.0),transforms.Lambda(lambda img: check_for_nan(img, "RandomPerspective"))] ),
+                    # transforms.Compose([transforms.RandomRotation(degrees=(0, 45)),transforms.Lambda(lambda img: check_for_nan(img, "RandomRotation"))] ),
+                    # transforms.Compose([transforms.RandomAffine( degrees=(30, 70), translate=(0.1, 0.3), scale=(0.5, 0.75)),transforms.Lambda(lambda img: check_for_nan(img, "RandomAffine"))] ),
+                    # transforms.Compose([transforms.Resize((crop_dim, crop_dim)),transforms.Lambda(lambda img: check_for_nan(img, "Resize"))] ),
+
+                    ## REAL STUFF
+                    transforms.RandomHorizontalFlip(p=1.0),
+                    transforms.RandomZoomOut(p=1.0),
+                    # transforms.RandomPerspective(distortion_scale=0.6, p=1.0),
+                    transforms.RandomRotation(degrees=(0, 45)),
+                    transforms.RandomAffine(
+                        degrees=(30, 70), translate=(0.1, 0.3), scale=(0.5, 0.75)
+                    ),
+                    transforms.Resize((crop_dim, crop_dim)),
                 ]
             ),
         )
@@ -106,25 +117,31 @@ def _get_geometric_transforms(crop_dim=224, is_eval=False):
 
 def _get_rgb_transforms(is_eval=False):
     if is_eval:
-        return transforms.Compose([transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),])
+        return transforms.Compose(
+            [
+                transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+            ]
+        )
     else:
         return transforms.Compose(
             [
                 # ColorJittering
                 transforms.RandomApply(
-                    nn.ModuleList([transforms.ColorJitter(hue=0.2)]), p=.25
+                    nn.ModuleList([transforms.ColorJitter(hue=0.2)]), p=0.25
                 ),
                 transforms.RandomApply(
-                    nn.ModuleList([transforms.ColorJitter(saturation=(0.7, 1.2))]), p=.25
+                    nn.ModuleList([transforms.ColorJitter(saturation=(0.7, 1.2))]),
+                    p=0.25,
                 ),
                 transforms.RandomApply(
-                    nn.ModuleList([transforms.ColorJitter(brightness=(0.7, 1.2))]), p=.25
+                    nn.ModuleList([transforms.ColorJitter(brightness=(0.7, 1.2))]),
+                    p=0.25,
                 ),
                 transforms.RandomApply(
-                    nn.ModuleList([transforms.ColorJitter(contrast=(0.7, 1.2))]), p=.25
+                    nn.ModuleList([transforms.ColorJitter(contrast=(0.7, 1.2))]), p=0.25
                 ),
                 transforms.RandomApply(
-                    nn.ModuleList([transforms.GaussianBlur(5)]), p=.25
+                    nn.ModuleList([transforms.GaussianBlur(5)]), p=0.25
                 ),
                 transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
             ]
@@ -412,7 +429,6 @@ class ActionSpotVideoDataset(Dataset):
                 self._clips.append((l["video"], i))
             assert has_clip, l
 
-    
     def apply_gpu_rgb_transform(self, frames):
         if self._rgb_transform is not None:
             frames = self._rgb_transform(frames)

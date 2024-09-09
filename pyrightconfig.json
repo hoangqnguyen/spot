@@ -1,6 +1,16 @@
 {
-    "exclude": [
-      "data"
-    ]
-  }
-  
+  "lsp": {
+    "pyright": {
+      "settings": {
+        "python.analysis": {
+          "diagnosticMode": "workspace",
+          "typeCheckingMode": "strict"
+        },
+        "python": {
+          "pythonPath": ".venv/bin/python"
+        }
+      }
+    }
+  },
+  "exclude": ["data"]
+}

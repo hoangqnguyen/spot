@@ -11,6 +11,7 @@ from contextlib import nullcontext
 from einops import rearrange
 import time
 import torch
+import torch.nn as nn
 
 class Conv1dCrossAttn(nn.Module):
 
@@ -294,16 +295,6 @@ def calc_loss_labels(outputs, targets, indices, num_classes, fg_weight=5.0):
     loss_ce = F.cross_entropy(src_logits.transpose(1, 2), target_classes)
 
     return loss_ce
-
-
-def get_src_permutation_idx(indices):
-    # permute predictions following indices
-    batch_idx = torch.cat(
-        [torch.full_like(src, i) for i, (src, _) in enumerate(indices)]
-    )
-    src_idx = torch.cat([src for (src, _) in indices])
-    return batch_idx, src_idx
-
 
 def calc_loss_tloc(outputs, targets, indices, num_boxes, apply_sigmoid=True):
     """Compute the losses related to the bounding boxes, the L1 regression loss and the GIoU loss
