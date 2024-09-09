@@ -49,7 +49,7 @@ class Conv1dCrossAttn(nn.Module):
         q = self.c_q(rearrange(tgt, "b t c -> b c t"))
         kv = self.c_kv(rearrange(src, "b t c -> b c t"))
 
-        q = rearrange(q, "b t c -> b c t")
+        q = rearrange(q, "b c t -> b t c")
         kv = rearrange(kv, "b c t -> b t c")
         # print(x.shape)
         k, v = kv.split(self.n_embd, dim=2)
