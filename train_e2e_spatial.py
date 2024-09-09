@@ -59,15 +59,10 @@ def get_args():
         type=str,
         required=True,
         choices=[
-            # From torchvision
-            "rn18",
-            "rn50",
-            # From timm (following its naming conventions)
-            "rny002",
-            "rny008",
             # From timm
             "convnextt",
             "regnety_008",
+            "regnety_002",
             "resnet50"
         ],
         help="CNN architecture for feature extraction",

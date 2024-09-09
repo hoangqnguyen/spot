@@ -12,6 +12,133 @@ from einops import rearrange
 import time
 import torch
 
+class Conv1dCrossAttn(nn.Module):
+
+    def __init__(
+        self, n_embd, n_head, receptive_field=3, downsample_factor=2, is_causal=False
+    ):
+        super().__init__()
+        assert n_embd % n_head == 0
+        # key, query, value projections for all heads, but in a batch
+        self.c_q = nn.Conv1d(n_embd, n_embd, kernel_size=1, stride=1, padding=0)
+        self.c_kv = nn.Conv1d(
+            n_embd,
+            2 * n_embd,
+            kernel_size=receptive_field,
+            stride=downsample_factor,
+            padding=1,
+        )
+        # output projection
+        self.c_proj = nn.Linear(n_embd, n_embd)
+        self.c_proj.NANOGPT_SCALE_INIT = 1
+        # regularization
+        self.n_head = n_head
+        self.n_embd = n_embd
+        self.is_causal = is_causal
+        self.downsample_factor = downsample_factor
+
+    def forward(self, tgt, src):
+        B, T, C = (
+            src.size()
+        )  # batch size, sequence length, embedding dimensionality (n_embd)
+        # calculate query, key, values for all heads in batch and move head forward to be the batch dim
+        # nh is "number of heads", hs is "head size", and C (number of channels) = nh * hs
+        # e.g. in GPT-2 (124M), n_head=12, hs=64, so nh*hs=C=768 channels in the Transformer
+        t = T // self.downsample_factor
+
+        q = self.c_q(rearrange(tgt, "b t c -> b c t"))
+        kv = self.c_kv(rearrange(src, "b t c -> b c t"))
+
+        q = rearrange(q, "b t c -> b c t")
+        kv = rearrange(kv, "b c t -> b t c")
+        # print(x.shape)
+        k, v = kv.split(self.n_embd, dim=2)
+
+        q = q.view(B, -1, self.n_head, C // self.n_head).transpose(
+            1, 2
+        )  # (B, nh, T, hs)
+        k = k.view(B, t, self.n_head, C // self.n_head).transpose(
+            1, 2
+        )  # (B, nh, T, hs)
+        v = v.view(B, t, self.n_head, C // self.n_head).transpose(
+            1, 2
+        )  # (B, nh, T, hs)
+        y = F.scaled_dot_product_attention(
+            q, k, v, is_causal=self.is_causal
+        )  # flash attention
+        y = (
+            y.transpose(1, 2).contiguous().view(B, -1, C)
+        )  # re-assemble all head outputs side by side
+        # output projection
+
+        y = self.c_proj(y)
+        return y
+
+
+class MLP(nn.Module):
+
+    def __init__(self, n_embd):
+        super().__init__()
+        self.c_fc = nn.Linear(n_embd, 4 * n_embd)
+        self.gelu = nn.GELU(approximate="tanh")
+        self.c_proj = nn.Linear(4 * n_embd, n_embd)
+        self.c_proj.NANOGPT_SCALE_INIT = 1
+
+    def forward(self, x):
+        x = self.c_fc(x)
+        x = self.gelu(x)
+        x = self.c_proj(x)
+        return x
+
+
+class Block(nn.Module):
+
+    def __init__(self, n_embd, n_head, receptive_field=3, downsample_factor=2):
+        super().__init__()
+        self.ln_1_tgt = nn.LayerNorm(n_embd)
+        self.ln_1_src = nn.LayerNorm(n_embd)
+        self.attn = Conv1dCrossAttn(
+            n_embd,
+            n_head,
+            receptive_field=receptive_field,
+            downsample_factor=downsample_factor,
+        )
+        self.ln_2 = nn.LayerNorm(n_embd)
+        self.mlp = MLP(n_embd)
+        self.downsample_factor = downsample_factor
+
+    def forward(self, tgt, src):
+        # print(f"{src.shape=}; {tgt.shape=}")
+        tgt = tgt + self.attn(tgt=self.ln_1_tgt(tgt), src=self.ln_1_src(src))
+        tgt = tgt + self.mlp(self.ln_2(tgt))
+        return tgt
+
+
+class ConvTransformer(nn.Module):
+    def __init__(
+        self, n_embd, depth, n_head, receptive_field=3, max_downsample_factor=2
+    ):
+        super().__init__()
+        self.layers = nn.ModuleList(
+            [
+                Block(
+                    n_embd,
+                    n_head,
+                    receptive_field=receptive_field,
+                    downsample_factor=(
+                        1 if (2 ** (d + 1)) >= max_downsample_factor else 2
+                    ),
+                )
+                for d in range(depth)
+            ]
+        )
+        self.ln_f = nn.LayerNorm(n_embd)
+
+    def forward(self, tgt, src):
+        for layer in self.layers:
+            tgt = layer(tgt, src)
+        return self.ln_f(tgt)
+
 
 class SpotFormer(nn.Module):
     def __init__(
@@ -23,6 +150,7 @@ class SpotFormer(nn.Module):
         num_heads=8,
         num_layers=6,
         dropout=0.1,
+        max_downsample_factor=16,
     ):
         super(SpotFormer, self).__init__()
         self.num_classes = num_classes
@@ -32,35 +160,19 @@ class SpotFormer(nn.Module):
         self.num_layers = num_layers
 
         self.backbone = CNNEncoder(cnn_model, out_c=hidden_dim)
-        # self.decoder = nn.TransformerDecoder(
-        #     nn.TransformerDecoderLayer(
-        #         d_model=hidden_dim,
-        #         nhead=num_heads,
-        #         dim_feedforward=2048,
-        #         dropout=dropout,
-        #         batch_first=True,
-        #     ),
-        #     num_layers=num_layers,
-        # )
-        self.transformer = nn.Transformer(
-            d_model=hidden_dim,
-            nhead=num_heads,
-            num_encoder_layers=num_layers,
-            num_decoder_layers=num_layers,
-            dim_feedforward=2048,
-            dropout=dropout,
-            batch_first=True,
+        self.decoder = ConvTransformer(
+            hidden_dim,
+            depth=num_layers,
+            n_head=num_heads,
+            max_downsample_factor=max_downsample_factor,
         )
-        self.class_embed = nn.Linear(hidden_dim, num_classes)
         self.query_embed = nn.Embedding(num_queries, hidden_dim)
+        self.class_embed = nn.Linear(hidden_dim, num_classes)
         self.tloc_embed = nn.Linear(hidden_dim, 3)
 
     def forward(self, x):
         x = self.backbone(x)  # B, T, hidden_dim
-        # x = self.decoder(
-        #     tgt=self.query_embed.weight.unsqueeze(0).repeat(x.shape[0], 1, 1), memory=x
-        # )
-        x = self.transformer(
+        x = self.decoder(
             tgt=self.query_embed.weight.unsqueeze(0).repeat(x.shape[0], 1, 1), src=x
         )
         return {
@@ -75,13 +187,9 @@ class CNNEncoder(nn.Module):
         self.model_name = model_name
         self.out_c = out_c
 
-        if model_name == "regnety_008":
+        if model_name in ("resnet50", "resnet18", "regnety_008", "regnety_002"):
             self.backbone = timm.create_model(
-                "regnety_008", pretrained=True, num_classes=0, global_pool=""
-            )
-        elif model_name == "resnet50":
-            self.backbone = timm.create_model(
-                "resnet50", pretrained=True, num_classes=0, global_pool=""
+                model_name, pretrained=True, num_classes=0, global_pool=""
             )
         else:
             raise ValueError(f"Unknown model name: {model_name}")
@@ -107,7 +215,6 @@ class CNNEncoder(nn.Module):
 
 @torch.no_grad()
 def hungarian_matcher(outputs, targets, cost_weights=(1.0, 1.0), apply_sigmoid=True):
-    # breakpoint()
     w_cost_tloc, w_cost_class = cost_weights
     bs, num_queries = outputs["pred_logits"].shape[:2]
     # We flatten to compute the cost matrices in a batch
@@ -126,18 +233,20 @@ def hungarian_matcher(outputs, targets, cost_weights=(1.0, 1.0), apply_sigmoid=T
     cost_tloc = torch.cdist(out_tloc, tgt_tloc, p=1)
 
     # Final cost matrix
-    # breakpoint()
     C = w_cost_tloc * cost_tloc + w_cost_class * cost_class
     C = C.view(bs, num_queries, -1).cpu()
-    try:
-        sizes = [v.shape[0] for v in targets["cls"]]
-        indices = [
-            linear_sum_assignment(c[i]) for i, c in enumerate(C.split(sizes, -1))
-        ]
-    except:
-        breakpoint()
+
+    sizes = [v.shape[0] for v in targets["cls"]]
+    indices = [
+        linear_sum_assignment(c[i].cpu().numpy())
+        for i, c in enumerate(C.split(sizes, -1))
+    ]
+
     return [
-        (torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64))
+        (
+            torch.as_tensor(i, dtype=torch.int64, device=out_prob.device),
+            torch.as_tensor(j, dtype=torch.int64, device=out_prob.device),
+        )
         for i, j in indices
     ]
 
@@ -168,8 +277,6 @@ def calc_loss_labels(outputs, targets, indices, num_classes, fg_weight=5.0):
         src_logits.shape[:2], num_classes, dtype=torch.int64, device=src_logits.device
     )
     target_classes[idx] = target_classes_o
-
-    # print(f"{src_logits.shape=}, {num_classes=}, {target_classes.max()=}, {weights=}")
 
     loss_ce = F.cross_entropy(src_logits.transpose(1, 2), target_classes)
 
@@ -222,8 +329,7 @@ def predict(model, seq, use_amp=False, device="cuda"):
         seq = torch.FloatTensor(seq)
     if len(seq.shape) == 4:  # (L, C, H, W)
         seq = seq.unsqueeze(0)
-    if seq.device != device:
-        seq = seq.to(device)
+    seq = seq.to(device)
 
     model.eval()
     with torch.no_grad():
@@ -231,39 +337,43 @@ def predict(model, seq, use_amp=False, device="cuda"):
             pred_dict = model(seq)
             pred_logits = pred_dict["pred_logits"]
 
-        pred_tloc = pred_dict["pred_tloc"].sigmoid().detach().cpu().numpy()
-        pred_cls = pred_logits.argmax(axis=-1).detach().cpu().numpy()
-        pred_score = (
-            pred_logits.softmax(axis=-1).max(axis=-1).values.detach().cpu().numpy()
-        )
+        pred_tloc = pred_dict["pred_tloc"].sigmoid()
+        pred_cls = pred_logits.argmax(dim=-1)
+        pred_score = pred_logits.softmax(dim=-1).max(dim=-1).values
+
         seq_len = seq.shape[1]
-        return [
-            [
-                dict(
-                    cls=cls,
-                    score=score,
-                    frame=int(tloc[0] * seq_len),
-                    xy=(tloc[1], tloc[2]),
+        results = []
+        for i in range(pred_cls.shape[0]):
+            batch_results = []
+            for cls, score, tloc in zip(pred_cls[i], pred_score[i], pred_tloc[i]):
+                batch_results.append(
+                    dict(
+                        cls=cls.item(),
+                        score=score.item(),
+                        frame=int(tloc[0].item() * seq_len),
+                        xy=(tloc[1].item(), tloc[2].item()),
+                    )
                 )
-                for cls, score, tloc in zip(pred_cls[i], pred_score[i], pred_tloc[i])
-            ]
-            for i in range(pred_cls.shape[0])
-        ]
+            results.append(batch_results)
+
+        return results
 
 
 if __name__ == "__main__":
     # Set device to CUDA if available
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    batch_size = 8
+    batch_size = 4
     num_classes = 6
-    num_queries = 20
-    input_dim = 386
-    sequence_length = 60
+    num_queries = 8
+    sequence_length = 32
     num_events = 5
 
     model = SpotFormer(
-        num_classes=num_classes + 1, num_queries=num_queries, cnn_model="regnety_008", hidden_dim=512
+        num_classes=num_classes + 1,
+        num_queries=num_queries,
+        cnn_model="regnety_008",
+        hidden_dim=512,
     ).to(device)
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Model has {total_params:,} total parameters.")
@@ -298,4 +408,6 @@ if __name__ == "__main__":
     end_time = time.time()
     print(f"Backward pass took {end_time - start_time:.4f} seconds")
 
-    # preds = predict(model, x)
+    # Test prediction
+    preds = predict(model, x)
+    print(f"Predictions shape: {len(preds)}")
