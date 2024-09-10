@@ -500,13 +500,13 @@ class E2EModel(BaseRGBModel):
                         pred = pred.unsqueeze(0)
 
                     for i in range(pred.shape[0]):
-                        # loss_cls += F.cross_entropy(
-                        #     pred[i].reshape(-1, self._num_classes), label, **ce_kwargs
-                        # )
-                        
-                        loss_cls += focal_loss_multiclass_with_logits(
-                            pred[i].reshape(-1, self._num_classes), label, gamma=2.0, reduction='mean'
+                        loss_cls += F.cross_entropy(
+                            pred[i].reshape(-1, self._num_classes), label, **ce_kwargs
                         )
+                        
+                        # loss_cls += focal_loss_multiclass_with_logits(
+                        #     pred[i].reshape(-1, self._num_classes), label, gamma=2.0, reduction='mean'
+                        # )
 
                     if self._model._predict_location:
                         # Assume the objectness score is the first element in loc[i], and the rest are x and y coordinates.
