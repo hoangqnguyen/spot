@@ -341,7 +341,7 @@ class E2EModel(BaseRGBModel):
             elif temporal_arch == "mamba_1":
                 from mamba_ssm import Mamba
 
-                hidden_dim = 1024
+                hidden_dim = 512
                 down_projection = nn.Linear(feat_dim, hidden_dim)
                 mamba = Mamba(
                     # This module uses roughly 3 * expand * d_model^2 parameters
@@ -353,6 +353,16 @@ class E2EModel(BaseRGBModel):
 
                 fc = MLP(hidden_dim, hidden_dim, num_classes, 3)
                 self._pred_fine = nn.Sequential(down_projection, mamba, fc)
+            elif temporal_arch == "bimamba":
+                from model.bimamba import BiMambaEncoder
+
+                hidden_dim = feat_dim
+                mamba = BiMambaEncoder(
+                    hidden_dim, 16
+                )
+
+                fc = MLP(hidden_dim, hidden_dim, num_classes, 3)
+                self._pred_fine = nn.Sequential(mamba, fc)
 
             else:
                 raise NotImplementedError(temporal_arch)
