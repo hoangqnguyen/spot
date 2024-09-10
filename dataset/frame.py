@@ -67,10 +67,12 @@ class FrameReader:
 # Pad the start/end of videos with empty frames
 DEFAULT_PAD_LEN = 5
 
+
 def check_for_nan(img, transform_name):
     if torch.isnan(img[0] if isinstance(img, tuple) else img).any():
         print(f"NaN found after {transform_name}")
     return img
+
 
 def _get_img_transforms(crop_dim=224, is_eval=False):
     p = 0.0 if is_eval else 0.25
@@ -82,7 +84,7 @@ def _get_img_transforms(crop_dim=224, is_eval=False):
                 [
                     transforms.RandomCrop((crop_dim, crop_dim)),
                     transforms.RandomResizedCrop((crop_dim, crop_dim)),
-                    transforms.Resize((crop_dim, crop_dim)), # No-op
+                    transforms.Resize((crop_dim, crop_dim)),  # No-op
                 ]
             )
         )
@@ -96,7 +98,7 @@ def _get_img_transforms(crop_dim=224, is_eval=False):
                     transforms.RandomAffine(
                         degrees=(30, 70), translate=(0.1, 0.3), scale=(0.5, 0.75)
                     ),
-                    transforms.Resize((crop_dim, crop_dim)), # No-op
+                    transforms.Resize((crop_dim, crop_dim)),  # No-op
                 ]
             ),
         )
@@ -120,13 +122,17 @@ def _get_img_transforms(crop_dim=224, is_eval=False):
     ]
     # return transforms.Compose(geometric_transforms + img_transforms)
 
-    return transforms.Compose([
-        transforms.Lambda(lambda img: check_for_nan(img, "Initial")),
-        *geometric_transforms,
-        transforms.Lambda(lambda img: check_for_nan(img, "Geometric Transforms")),
-        *img_transforms,
-        transforms.Lambda(lambda img: check_for_nan(img, "Color Jittering and Normalization")),
-    ])
+    return transforms.Compose(
+        [
+            transforms.Lambda(lambda img: check_for_nan(img, "Initial")),
+            *geometric_transforms,
+            transforms.Lambda(lambda img: check_for_nan(img, "Geometric Transforms")),
+            *img_transforms,
+            transforms.Lambda(
+                lambda img: check_for_nan(img, "Color Jittering and Normalization")
+            ),
+        ]
+    )
 
 
 def _print_info_helper(src_file, labels):
@@ -285,7 +291,13 @@ class ActionSpotDataset(Dataset):
                 in_boxes, format="XYXY", canvas_size=frames.shape[-2:]
             )
 
-            frames, out_boxes = self._transform(frames, in_boxes)
+            # create a nan vector
+            out_frames = torch.zeros(1) / 0.0
+            while out_frames.isnan().any():
+                # its a trick if some transformation messes up the image we try again. luckily it happens very rarely
+                out_frames, out_boxes = self._transform(frames, in_boxes)
+
+            frames = out_frames
             event_xys = out_boxes.data[:, :2] / torch.tensor(
                 [self._crop_dim, self._crop_dim]
             ).reshape(1, 2)

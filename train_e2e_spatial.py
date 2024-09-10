@@ -146,6 +146,7 @@ def get_args():
 
     # Eval mode
     parser.add_argument("--eval_only", action="store_true", help="As the name suggests")
+    parser.add_argument("--eval_split", type=str, default="test")
 
     parser.add_argument(
         "--checkpoint_path",
@@ -500,13 +501,13 @@ class E2EModel(BaseRGBModel):
                         pred = pred.unsqueeze(0)
 
                     for i in range(pred.shape[0]):
-                        # loss_cls += F.cross_entropy(
-                        #     pred[i].reshape(-1, self._num_classes), label, **ce_kwargs
-                        # )
-                        
-                        loss_cls += focal_loss_multiclass_with_logits(
-                            pred[i].reshape(-1, self._num_classes), label, gamma=2.0, reduction='mean'
+                        loss_cls += F.cross_entropy(
+                            pred[i].reshape(-1, self._num_classes), label, **ce_kwargs
                         )
+                        
+                        # loss_cls += focal_loss_multiclass_with_logits(
+                        #     pred[i].reshape(-1, self._num_classes), label, gamma=2.0, reduction='mean'
+                        # )
 
                     if self._model._predict_location:
                         # Assume the objectness score is the first element in loc[i], and the rest are x and y coordinates.
@@ -1085,7 +1086,7 @@ def main(args):
     eval_splits = ["val"] if args.criterion != "map" else []
 
     # Evaluate on hold out splits
-    eval_splits += ["test", "challenge"]
+    eval_splits += [args.eval_split, "challenge"]
     for split in eval_splits:
         split_path = os.path.join("data", args.dataset, "{}.json".format(split))
         if os.path.exists(split_path):
