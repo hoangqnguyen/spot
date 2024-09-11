@@ -157,6 +157,7 @@ def get_args():
 
     return parser.parse_args()
 
+
 def focal_loss_multiclass_with_logits(
     input,
     target,
@@ -164,7 +165,7 @@ def focal_loss_multiclass_with_logits(
     reduction: str = "mean",
     eps: float = 1e-8,
 ):
-    ce_loss = F.cross_entropy(input, target, reduction='none')
+    ce_loss = F.cross_entropy(input, target, reduction="none")
     pt = torch.exp(-ce_loss)
     weight = (1 - pt) ** gamma
     focal_loss = weight * ce_loss
@@ -174,6 +175,7 @@ def focal_loss_multiclass_with_logits(
         return focal_loss.sum()
     else:
         return focal_loss
+
 
 def calculate_loss_contrast(im_feat, labels):
     """
@@ -204,6 +206,7 @@ def calculate_loss_contrast(im_feat, labels):
     loss_contrast = 1 / (delta.mean() + 1e-6)
 
     return loss_contrast
+
 
 class E2EModel(BaseRGBModel):
 
@@ -341,8 +344,8 @@ class E2EModel(BaseRGBModel):
             elif temporal_arch == "mamba_1":
                 from mamba_ssm import Mamba
 
-                hidden_dim = 512
-                down_projection = nn.Linear(feat_dim, hidden_dim)
+                hidden_dim = feat_dim
+                # down_projection = nn.Linear(feat_dim, hidden_dim)
                 mamba = Mamba(
                     # This module uses roughly 3 * expand * d_model^2 parameters
                     d_model=hidden_dim,  # Model dimension d_model
@@ -352,14 +355,20 @@ class E2EModel(BaseRGBModel):
                 ).to("cuda")
 
                 fc = MLP(hidden_dim, hidden_dim, num_classes, 3)
-                self._pred_fine = nn.Sequential(down_projection, mamba, fc)
+                self._pred_fine = nn.Sequential(mamba, fc)
             elif temporal_arch == "bimamba":
-                from model.bimamba import BiMambaEncoder
+                from mamba_ssm import Mamba
 
                 hidden_dim = feat_dim
-                mamba = BiMambaEncoder(
-                    hidden_dim, 16
-                )
+                # down_projection = nn.Linear(feat_dim, hidden_dim)
+                mamba = Mamba(
+                    # This module uses roughly 3 * expand * d_model^2 parameters
+                    d_model=hidden_dim,  # Model dimension d_model
+                    d_state=16,  # SSM state expansion factor
+                    d_conv=4,  # Local convolution width
+                    expand=2,  # Block expansion factor,
+                    bimamba=True,
+                ).to("cuda")
 
                 fc = MLP(hidden_dim, hidden_dim, num_classes, 3)
                 self._pred_fine = nn.Sequential(mamba, fc)
@@ -370,7 +379,9 @@ class E2EModel(BaseRGBModel):
             self._predict_location = predict_location
             if self._predict_location:
                 self._pred_loc = nn.Sequential(
-                    MLP(hidden_dim, hidden_dim * 4, output_dim=hidden_dim, num_layers=3),
+                    MLP(
+                        hidden_dim, hidden_dim * 4, output_dim=hidden_dim, num_layers=3
+                    ),
                     nn.Linear(hidden_dim, 2),
                 )
                 # from model.common import ImprovedLocationPredictor
@@ -405,7 +416,11 @@ class E2EModel(BaseRGBModel):
             if self._predict_location:
                 loc_feat = self._pred_loc(im_feat)
 
-            return {"im_feat": self._pred_fine(im_feat), "loc_feat": loc_feat, "cnn_feat": im_feat}
+            return {
+                "im_feat": self._pred_fine(im_feat),
+                "loc_feat": loc_feat,
+                "cnn_feat": im_feat,
+            }
 
         def print_stats(self):
             print(f"Model params:{sum(p.numel() for p in self.parameters()):,}")
@@ -493,7 +508,11 @@ class E2EModel(BaseRGBModel):
                     else label.view(-1, label.shape[-1])
                 )
 
-                with torch.cuda.amp.autocast() if optimizer is not None else nullcontext():
+                with (
+                    torch.cuda.amp.autocast()
+                    if optimizer is not None
+                    else nullcontext()
+                ):
                     preds = self._model(frame)
 
                     cnn_feat = preds["cnn_feat"]
@@ -514,7 +533,7 @@ class E2EModel(BaseRGBModel):
                         loss_cls += F.cross_entropy(
                             pred[i].reshape(-1, self._num_classes), label, **ce_kwargs
                         )
-                        
+
                         # loss_cls += focal_loss_multiclass_with_logits(
                         #     pred[i].reshape(-1, self._num_classes), label, gamma=2.0, reduction='mean'
                         # )
@@ -530,8 +549,10 @@ class E2EModel(BaseRGBModel):
                             pred_loc.sigmoid(), target_xy, reduction="none"
                         ).sum(dim=-1)
 
-                        loss_loc += (xy_loss * event_mask).sum() / (event_mask.sum() + 1e-6)
-                        
+                        loss_loc += (xy_loss * event_mask).sum() / (
+                            event_mask.sum() + 1e-6
+                        )
+
                         # breakpoint if loss loc is nan
                         if torch.isnan(loss_loc):
                             breakpoint()
@@ -585,7 +606,13 @@ class E2EModel(BaseRGBModel):
             pred_cls_score = torch.softmax(pred_dict["im_feat"], axis=2).cpu().numpy()
             pred_cls = torch.argmax(pred_dict["im_feat"], axis=2).cpu().numpy()
             if self._model._predict_location:
-                pred_loc = pred_dict["loc_feat"].reshape(seq.shape[0], -1, 2).sigmoid().cpu().numpy()  # B, T, 2
+                pred_loc = (
+                    pred_dict["loc_feat"]
+                    .reshape(seq.shape[0], -1, 2)
+                    .sigmoid()
+                    .cpu()
+                    .numpy()
+                )  # B, T, 2
                 return pred_cls, pred_cls_score, pred_loc
             else:
                 return pred_cls, pred_cls_score
@@ -632,7 +659,7 @@ def evaluate(
             if predict_location:
                 # Predict scores and locations if location prediction is enabled
                 _, batch_pred_scores, batch_pred_loc = model.predict(clip["frame"])
-                
+
                 batch_pred_loc = batch_pred_loc.reshape(
                     batch_pred_scores.shape[0], -1, 2
                 )
@@ -714,7 +741,7 @@ def evaluate(
     # breakpoint()
     avg_mAP_t = None
     if calc_stats:
-        for fg_threshold in [.25]:
+        for fg_threshold in [0.25]:
             # Print the evaluation results
             # print("=== Results on {} (w/o NMS) ===".format(split))
             print("=== Results on {} (FG_THRES={:.2f}) ===".format(split, fg_threshold))
@@ -729,7 +756,9 @@ def evaluate(
                 rows.append(get_f1_tab_row(c))
             print(
                 tabulate(
-                    rows, headers=["Exact frame", "F1", "TP", "FP", "FN"], floatfmt="0.2f"
+                    rows,
+                    headers=["Exact frame", "F1", "TP", "FP", "FN"],
+                    floatfmt="0.2f",
                 )
             )
             print()
@@ -737,11 +766,14 @@ def evaluate(
             # Calculate mean average precision (mAP)
             # mAPs, _ = compute_mAPs(dataset.labels, pred_events_high_recall)
             mAPs_t, mAPs_p = compute_mAPs_with_locations(
-                dataset.labels, pred_events_high_recall, px_scale=px_scale, fg_threshold=fg_threshold
+                dataset.labels,
+                pred_events_high_recall,
+                px_scale=px_scale,
+                fg_threshold=fg_threshold,
             )
             avg_mAP_t = np.mean(mAPs_t[1:])
             avg_mAP_s = np.mean(mAPs_p)
-            
+
             # hamornic mean
             avg_mAP = 2 * avg_mAP_t * avg_mAP_s / (avg_mAP_t + avg_mAP_s + 1e-6)
             print("Harmonic mean (temporal and spatial mAPs): {:0.2%}".format(avg_mAP))
@@ -1003,15 +1035,28 @@ def main(args):
             )
             val_loss_dict = model.epoch(val_loader, acc_grad_iter=args.acc_grad_iter)
 
-            print("\n",
+            print(
+                "\n",
                 tabulate(
                     [
-                        ["Train loss", train_loss_dict["cls"], train_loss_dict["loc"], train_loss_dict["contrast"], train_loss_dict["sum"]],
-                        ["Val loss", val_loss_dict["cls"], val_loss_dict["loc"], val_loss_dict["contrast"], val_loss_dict["sum"]],
+                        [
+                            "Train loss",
+                            train_loss_dict["cls"],
+                            train_loss_dict["loc"],
+                            train_loss_dict["contrast"],
+                            train_loss_dict["sum"],
+                        ],
+                        [
+                            "Val loss",
+                            val_loss_dict["cls"],
+                            val_loss_dict["loc"],
+                            val_loss_dict["contrast"],
+                            val_loss_dict["sum"],
+                        ],
                     ],
                     headers=[f"Epoch: {epoch}", "cls", "loc", "contrast", "sum"],
                     floatfmt=".5f",
-                )
+                ),
             )
 
             val_mAP = 0
