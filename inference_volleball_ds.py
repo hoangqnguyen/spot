@@ -113,7 +113,7 @@ class InferenceDataset(Dataset):
         print(f"frame_dir: {self.frame_dir}")
         print(f"num_segments: {len(self.frame_paths)}")
         print(f"num_clips: {len(self.clips)}")
-        print(f"clips: {self.frame_paths.keys()}")
+        # print(f"clips: {self.frame_paths.keys()}")
 
     def _get_clips(self):
         for game_id in shuffle(list_subdir(self.frame_dir)):
@@ -405,11 +405,11 @@ def run_inference(model, dataloader, classes, pred_file):
                 )
 
         pred_events.append({"video": video, "events": events})
-        if pred_file:
-            os.makedirs(os.path.dirname(pred_file), exist_ok=True)
-            store_json(pred_file, pred_events)
-        print(f"Saved predictions to {pred_file}")
-        return pred_events
+    if pred_file:
+        os.makedirs(os.path.dirname(pred_file), exist_ok=True)
+        store_json(pred_file, pred_events)
+    print(f"Saved predictions to {pred_file}")
+    return pred_events
 
 
 def visualize(config):
