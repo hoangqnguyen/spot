@@ -13,3 +13,9 @@ debug.py
 eval_vis.ipynb
 demo.ipynb
 demo_create.py
+.idea/misc.xml
+.idea/modules.xml
+.idea/spot_simple_reg.iml
+.idea/vcs.xml
+.idea/inspectionProfiles/profiles_settings.xml
+.idea/.gitignore
