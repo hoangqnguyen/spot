@@ -128,8 +128,6 @@ class E2EModel(BaseRGBModel):
                     torchvision.models, resnet_name)(pretrained=is_rgb)
                 feat_dim = features.fc.in_features
                 features.fc = nn.Identity()
-                # import torchsummary
-                # print(torchsummary.summary(features.to('cuda'), (3, 224, 224)))
 
                 # Flow has only two input channels
                 if not is_rgb:
@@ -193,6 +191,12 @@ class E2EModel(BaseRGBModel):
                 self._pred_fine = ASFormerPrediction(feat_dim, num_classes, 3)
             elif temporal_arch == '':
                 self._pred_fine = FCPrediction(feat_dim, num_classes)
+            elif temporal_arch == 'sf':
+                from model.spotformer import Spotformer
+                self._pred_fine = Spotformer(
+                    d_model=feat_dim, nhead=8, num_layers=4, num_queries=clip_len,
+                    out_dim=num_classes)
+            
             elif temporal_arch == 'transformer_enc_only_base_11m':
                 from positional_encodings.torch_encodings import PositionalEncoding1D, Summer
                 from x_transformers import Encoder
