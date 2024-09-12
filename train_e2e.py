@@ -297,7 +297,8 @@ class E2EModel(BaseRGBModel):
 
         epoch_loss = 0.
         with torch.no_grad() if optimizer is None else nullcontext():
-            for batch_idx, batch in enumerate(tqdm(loader)):
+            pbar = tqdm(loader)
+            for batch_idx, batch in enumerate(pbar):
                 frame = loader.dataset.load_frame_gpu(batch, self.device)
                 label = batch['label'].to(self.device)
 
@@ -323,6 +324,7 @@ class E2EModel(BaseRGBModel):
                          backward_only=(batch_idx + 1) % acc_grad_iter != 0)
 
                 epoch_loss += loss.detach().item()
+                pbar.set_postfix(loss=epoch_loss / (batch_idx + 1))
 
         return epoch_loss / len(loader)     # Avg loss
 
