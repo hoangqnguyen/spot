@@ -133,187 +133,9 @@ def get_args():
     )
     return parser.parse_args()
 
+from model.spotformer import Spotformer
 
-class E2EModel(BaseRGBModel):
-
-    class Impl(nn.Module):
-
-        def __init__(
-            self, num_classes, feature_arch, temporal_arch, clip_len, modality
-        ):
-            super().__init__()
-            is_rgb = modality == "rgb"
-            in_channels = {"flow": 2, "bw": 1, "rgb": 3}[modality]
-
-            if feature_arch.startswith(("rn18", "rn50")):
-                resnet_name = feature_arch.split("_")[0].replace("rn", "resnet")
-                features = getattr(torchvision.models, resnet_name)(pretrained=is_rgb)
-                feat_dim = features.fc.in_features
-                features.fc = nn.Identity()
-
-                # Flow has only two input channels
-                if not is_rgb:
-                    # FIXME: args maybe wrong for larger resnet
-                    features.conv1 = nn.Conv2d(
-                        in_channels,
-                        64,
-                        kernel_size=(7, 7),
-                        stride=(2, 2),
-                        padding=(3, 3),
-                        bias=False,
-                    )
-
-            elif feature_arch.startswith(("rny002", "rny008")):
-                features = timm.create_model(
-                    {
-                        "rny002": "regnety_002",
-                        "rny008": "regnety_008",
-                    }[feature_arch.rsplit("_", 1)[0]],
-                    pretrained=is_rgb,
-                )
-                feat_dim = features.head.fc.in_features
-                features.head.fc = nn.Identity()
-
-                if not is_rgb:
-                    features.stem.conv = nn.Conv2d(
-                        in_channels,
-                        32,
-                        kernel_size=(3, 3),
-                        stride=(2, 2),
-                        padding=(1, 1),
-                        bias=False,
-                    )
-
-            elif "convnextt" in feature_arch:
-                features = timm.create_model("convnext_tiny", pretrained=is_rgb)
-                feat_dim = features.head.fc.in_features
-                features.head.fc = nn.Identity()
-
-                if not is_rgb:
-                    features.stem[0] = nn.Conv2d(
-                        in_channels, 96, kernel_size=4, stride=4
-                    )
-
-            else:
-                raise NotImplementedError(feature_arch)
-
-            # Add Temporal Shift Modules
-            self._require_clip_len = -1
-            if feature_arch.endswith("_tsm"):
-                make_temporal_shift(features, clip_len, is_gsm=False)
-                self._require_clip_len = clip_len
-            elif feature_arch.endswith("_gsm"):
-                make_temporal_shift(features, clip_len, is_gsm=True)
-                self._require_clip_len = clip_len
-
-            self._features = features
-            self._feat_dim = feat_dim
-
-            if "gru" in temporal_arch:
-                hidden_dim = feat_dim
-                if hidden_dim > MAX_GRU_HIDDEN_DIM:
-                    hidden_dim = MAX_GRU_HIDDEN_DIM
-                    print(
-                        "Clamped GRU hidden dim: {} -> {}".format(feat_dim, hidden_dim)
-                    )
-                if temporal_arch in ("gru", "deeper_gru"):
-                    self._pred_fine = GRUPrediction(
-                        feat_dim,
-                        num_classes,
-                        hidden_dim,
-                        num_layers=3 if temporal_arch[0] == "d" else 1,
-                    )
-                else:
-                    raise NotImplementedError(temporal_arch)
-            elif temporal_arch == "mstcn":
-                self._pred_fine = TCNPrediction(feat_dim, num_classes, 3)
-            elif temporal_arch == "asformer":
-                self._pred_fine = ASFormerPrediction(feat_dim, num_classes, 3)
-            elif temporal_arch == "":
-                self._pred_fine = FCPrediction(feat_dim, num_classes)
-            elif temporal_arch == "sf":
-                from model.spotformer import Spotformer
-
-                self._pred_fine = Spotformer(
-                    d_model=feat_dim, nhead=4, num_layers=1, out_dim=num_classes
-                )
-
-            elif temporal_arch == "transformer_enc_only_base_11m":
-                from positional_encodings.torch_encodings import (
-                    PositionalEncoding1D,
-                    Summer,
-                )
-                from x_transformers import Encoder
-
-                hidden_dim = 256
-                down_projection = nn.Linear(
-                    feat_dim, hidden_dim
-                )  # feat_dim is too large, needs to down project
-                pos_enc = Summer(
-                    PositionalEncoding1D(hidden_dim)
-                )  # positional encoding for sequence
-                encoder = Encoder(
-                    dim=hidden_dim,
-                    depth=5,
-                    heads=8,
-                    attn_flash=True,
-                    layer_dropout=0.1,  # stochastic depth - dropout entire layer
-                    attn_dropout=0.1,  # dropout post-attention
-                    ff_dropout=0.1,  # feedforward dropout
-                )  # encoder-only transformer
-                fc = MLP(hidden_dim, hidden_dim, num_classes, 3)  # final classifier
-
-                # put everything together
-                self._pred_fine = nn.Sequential(down_projection, pos_enc, encoder, fc)
-
-            elif temporal_arch == "mamba_1":
-                from mamba_ssm import Mamba
-
-                hidden_dim = 1024
-                down_projection = nn.Linear(feat_dim, hidden_dim)
-                mamba = Mamba(
-                    # This module uses roughly 3 * expand * d_model^2 parameters
-                    d_model=hidden_dim,  # Model dimension d_model
-                    d_state=16,  # SSM state expansion factor
-                    d_conv=4,  # Local convolution width
-                    expand=2,  # Block expansion factor
-                ).to("cuda")
-
-                fc = MLP(hidden_dim, hidden_dim, num_classes, 3)
-                self._pred_fine = nn.Sequential(down_projection, mamba, fc)
-
-            else:
-                raise NotImplementedError(temporal_arch)
-
-        def forward(self, x):
-            batch_size, true_clip_len, channels, height, width = x.shape
-
-            clip_len = true_clip_len
-            if self._require_clip_len > 0:
-                # TSM module requires clip len to be known
-                assert (
-                    true_clip_len <= self._require_clip_len
-                ), "Expected {}, got {}".format(self._require_clip_len, true_clip_len)
-                if true_clip_len < self._require_clip_len:
-                    x = F.pad(x, (0,) * 7 + (self._require_clip_len - true_clip_len,))
-                    clip_len = self._require_clip_len
-
-            im_feat = self._features(x.view(-1, channels, height, width)).reshape(
-                batch_size, clip_len, self._feat_dim
-            )
-
-            if true_clip_len != clip_len:
-                # Undo padding
-                im_feat = im_feat[:, :true_clip_len, :]
-
-            return self._pred_fine(im_feat)
-
-        def print_stats(self):
-            print(f"Model params:{sum(p.numel() for p in self.parameters()):,}")
-            print(
-                f"CNN features:{sum(p.numel() for p in self._features.parameters()):,}"
-            )
-            print(f"Temporal:{sum(p.numel() for p in self._pred_fine.parameters()):,}")
+class ModelWrapper(BaseRGBModel):
 
     def __init__(
         self,
@@ -327,9 +149,7 @@ class E2EModel(BaseRGBModel):
     ):
         self.device = device
         self._multi_gpu = multi_gpu
-        self._model = E2EModel.Impl(
-            num_classes, feature_arch, temporal_arch, clip_len, modality
-        )
+        self._model = Spotformer(d_model=512, nhead=4, out_dim=num_classes)
         self._model.print_stats()
 
         if multi_gpu:
@@ -696,7 +516,7 @@ def main(args):
         worker_init_fn=worker_init_fn,
     )
 
-    model = E2EModel(
+    model = ModelWrapper(
         len(classes) + 1,
         args.feature_arch,
         args.temporal_arch,
