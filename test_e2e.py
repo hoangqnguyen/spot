@@ -9,7 +9,7 @@ import torch
 from dataset.frame import ActionSpotVideoDataset
 from util.io import load_json
 from util.dataset import load_classes
-from train_e2e import E2EModel, evaluate
+from train_e2e import ModelWrapper, evaluate
 
 
 def get_args():
@@ -71,7 +71,7 @@ def main(model_dir, frame_dir, split, no_overlap, save, save_as, dataset):
 
     classes = load_classes(os.path.join('data', dataset, 'class.txt'))
 
-    model = E2EModel(
+    model = ModelWrapper(
         len(classes) + 1, config['feature_arch'], config['temporal_arch'],
         clip_len=config['clip_len'], modality=config['modality'],
         multi_gpu=config['gpu_parallel'])

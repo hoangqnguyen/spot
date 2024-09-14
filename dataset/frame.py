@@ -11,6 +11,7 @@ import torchvision
 import torchvision.transforms as transforms
 
 from util.io import load_json
+from util.dataset import load_classes
 from .transform import RandomGaussianNoise, RandomHorizontalFlipFLow, \
     RandomOffsetFlow, SeedableRandomSquareCrop, ThreeCrop
 
@@ -291,11 +292,11 @@ class ActionSpotDataset(Dataset):
             stride=1,                   # Downsample frame rate
             same_transform=True,        # Apply the same random augmentation to
                                         # each frame in a clip
-            dilate_len=0,               # Dilate ground truth labels
-            mixup=False,
             pad_len=DEFAULT_PAD_LEN,    # Number of frames to pad the start
                                         # and end of videos
             fg_upsample=-1,             # Sample foreground explicitly
+            **dataset_kwargs
+            
     ):
         self._src_file = label_file
         self._labels = load_json(label_file)
@@ -317,7 +318,6 @@ class ActionSpotDataset(Dataset):
         self._is_eval = is_eval
 
         # Label modifications
-        self._dilate_len = dilate_len
         self._fg_upsample = fg_upsample
 
         # Sample based on foreground labels
@@ -328,9 +328,10 @@ class ActionSpotDataset(Dataset):
                     if event['frame'] < x['num_frames']:
                         self._flat_labels.append((i, event['frame']))
 
-        self._mixup = mixup
+        # Disable mixup for set prediction tasks
+        self._mixup = False
 
-        # Try to do defer the latter half of the transforms to the GPU
+        # Try to defer the latter half of the transforms to the GPU
         self._gpu_transform = None
         if not is_eval and same_transform:
             if modality == 'rgb':
@@ -379,60 +380,46 @@ class ActionSpotDataset(Dataset):
         base_idx = random.randint(lower_bound, upper_bound) \
             if upper_bound > lower_bound else lower_bound
 
-        assert base_idx <= frame_idx
-        assert base_idx + self._clip_len > frame_idx
         return video_meta, base_idx
 
     def _get_one(self):
-        if self._fg_upsample > 0 and random.random() >= self._fg_upsample:
+        if self._fg_upsample > 0 and random.random() < self._fg_upsample:
             video_meta, base_idx = self._sample_foreground()
         else:
             video_meta, base_idx = self._sample_uniform()
-
-        labels = np.zeros(self._clip_len, np.int64)
-        for event in video_meta['events']:
-            event_frame = event['frame']
-
-            # Index of event in label array
-            label_idx = (event_frame - base_idx) // self._stride
-            if (label_idx >= -self._dilate_len
-                and label_idx < self._clip_len + self._dilate_len
-            ):
-                label = self._class_dict[event['label']]
-                for i in range(
-                    max(0, label_idx - self._dilate_len),
-                    min(self._clip_len, label_idx + self._dilate_len + 1)
-                ):
-                    labels[i] = label
 
         frames = self._frame_reader.load_frames(
             video_meta['video'], base_idx,
             base_idx + self._clip_len * self._stride, pad=True,
             stride=self._stride, randomize=not self._is_eval)
 
-        return {'frame': frames, 'contains_event': int(np.sum(labels) > 0),
-                'label': labels}
+        # Collect events within the clip
+        events_in_clip = []
+        for event in video_meta['events']:
+            event_frame = event['frame']
+            # Check if the event is within the clip
+            if base_idx <= event_frame < base_idx + self._clip_len * self._stride:
+                # Frame index relative to the clip
+                relative_frame = (event_frame - base_idx) // self._stride
+                # Normalize frame index between 0 and 1
+                normalized_frame = relative_frame / (self._clip_len - 1)
+                events_in_clip.append({
+                    'label': self._class_dict[event['label']],
+                    'frame': normalized_frame
+                })
+
+        # Prepare targets
+        if len(events_in_clip) > 0:
+            labels = torch.tensor([e['label'] for e in events_in_clip], dtype=torch.long)
+            frames_norm = torch.tensor([e['frame'] for e in events_in_clip], dtype=torch.float)
+        else:
+            labels = torch.tensor([0], dtype=torch.long)
+            frames_norm = torch.tensor([0], dtype=torch.float)
+
+        return {'frames': frames, 'labels': labels, 'timesteps': frames_norm}
 
     def __getitem__(self, unused):
         ret = self._get_one()
-
-        if self._mixup:
-            mix = self._get_one()    # Sample another clip
-            l = random.betavariate(0.2, 0.2)
-            label_dist = np.zeros((self._clip_len, len(self._class_dict) + 1))
-            label_dist[range(self._clip_len), ret['label']] = l
-            label_dist[range(self._clip_len), mix['label']] += 1. - l
-
-            if self._gpu_transform is None:
-                ret['frame'] = l * ret['frame'] + (1. - l) * mix['frame']
-            else:
-                ret['mix_frame'] = mix['frame']
-                ret['mix_weight'] = l
-
-            ret['contains_event'] = max(
-                ret['contains_event'], mix['contains_event'])
-            ret['label'] = label_dist
-
         return ret
 
     def __len__(self):
@@ -554,3 +541,26 @@ class ActionSpotVideoDataset(Dataset):
         print('{} : {} videos, {} frames ({} stride), {:0.5f}% non-bg'.format(
             self._src_file, len(self._labels), num_frames, self._stride,
             num_events / num_frames * 100))
+
+def collate_fn(batch):
+    # Extract frames, labels, and timesteps
+    frames = [item['frames'] for item in batch]
+    labels = [item['labels'] for item in batch]
+    timesteps = [item['timesteps'] for item in batch]
+
+    # Find the max length for frames and labels to pad the others
+    max_frame_len = max([frame.shape[0] for frame in frames])
+    max_label_len = max([label.shape[0] for label in labels])
+    max_timestep_len = max([timestep.shape[0] for timestep in timesteps])
+
+    # Padding the frames, labels, and timesteps
+    padded_frames = [torch.nn.functional.pad(frame, (0, 0, 0, 0, 0, max_frame_len - frame.shape[0])) for frame in frames]
+    padded_labels = [np.pad(label, (0, max_label_len - len(label)), 'constant') for label in labels]
+    padded_timesteps = [np.pad(timestep, (0, max_timestep_len - len(timestep)), 'constant') for timestep in timesteps]
+
+    # Stack them into batches
+    batch_frames = torch.stack(padded_frames)
+    batch_labels = torch.tensor(np.array(padded_labels))
+    batch_timesteps = torch.tensor(np.array(padded_timesteps))
+
+    return {'frames': batch_frames, 'labels': batch_labels, 'timesteps': batch_timesteps}
