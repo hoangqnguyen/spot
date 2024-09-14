@@ -267,7 +267,7 @@ def compute_loss(outputs, targets, indices, num_classes, fg_weight=5.0):
             * fg_mask
         )
 
-        loss_frames = loss_frames.sum() / fg_mask.sum()
+        loss_frames = loss_frames.sum() / (fg_mask.sum() + 1e-5)
 
     # Total loss
     total_loss = loss_ce + loss_frames * 1.0  # Adjust the weight if necessary
