@@ -9,6 +9,7 @@ import torch.nn as nn
 from torch.utils.data import Dataset
 import torchvision
 import torchvision.transforms as transforms
+from torchvision.transforms import v2
 
 from util.io import load_json
 from util.dataset import load_classes
@@ -184,13 +185,13 @@ def _get_img_transforms(
     if modality == 'rgb':
         if not is_eval:
             img_transforms.append(
-                transforms.RandomChoice(
+                v2.RandomChoice(
                     [
-                        transforms.RandomHorizontalFlip(p=1.0),
-                        transforms.RandomZoomOut(p=1.0),
-                        transforms.RandomPerspective(distortion_scale=0.6, p=1.0),
-                        transforms.RandomRotation(degrees=(0, 45)),
-                        transforms.RandomAffine(
+                        v2.RandomHorizontalFlip(p=1.0),
+                        v2.RandomZoomOut(p=1.0),
+                        v2.RandomPerspective(distortion_scale=0.6, p=1.0),
+                        v2.RandomRotation(degrees=(0, 45)),
+                        v2.RandomAffine(
                             degrees=(30, 70), translate=(0.1, 0.3), scale=(0.5, 0.75)
                         ),
                         nn.Identity()
@@ -273,7 +274,8 @@ def _get_img_transforms(
     else:
         raise NotImplementedError(modality)
 
-    img_transform = torch.jit.script(nn.Sequential(*img_transforms))
+    # img_transform = torch.jit.script(nn.Sequential(*img_transforms))
+    img_transform = v2.Compose(img_transforms + [v2.Resize(size=(crop_dim, crop_dim))])
     return crop_transform, img_transform
 
 
