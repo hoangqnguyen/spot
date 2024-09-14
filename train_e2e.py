@@ -123,6 +123,7 @@ class ModelWrapper(BaseRGBModel):
         self._model = DeTRPrediction(
             num_classes=num_classes,
             backbone=feature_arch,
+            hidden_dim=256,
             num_queries=100,
         )
         self._model.print_stats()

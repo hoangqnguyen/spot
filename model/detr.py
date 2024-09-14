@@ -11,10 +11,10 @@ class DeTRPrediction(nn.Module):
         self,
         num_classes,
         backbone,
+        hidden_dim=256,
         num_queries=100,
         dropout=0.1,
         nheads=8,
-        dim_feedforward=256,
         num_encoder_layers=6,
         num_decoder_layers=6,
     ):
@@ -33,29 +33,31 @@ class DeTRPrediction(nn.Module):
         feat_dim = self.backbone.head.fc.in_features
         self.backbone.head.fc = nn.Identity()
 
+        self.in_proj = nn.Linear(feat_dim, hidden_dim)
 
-        # Transformer Encoder-Decoder
-        self.transformer = nn.Transformer(
-            d_model=feat_dim,
-            nhead=nheads,
-            num_encoder_layers=num_encoder_layers,
-            num_decoder_layers=num_decoder_layers,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
-            activation="relu",
+        # Transformer Decoder
+        self.transformer = nn.TransformerDecoder(
+            nn.TransformerDecoderLayer(
+                d_model=hidden_dim,
+                nhead=nheads,
+                dim_feedforward=hidden_dim * 4,
+                dropout=dropout,
+                activation="relu",
+            ),
+            num_decoder_layers,
         )
 
         # Positional Encoding
-        self.pos_encoder = PositionalEncoding(feat_dim, dropout)
-        self.pos_decoder = PositionalEncoding(feat_dim, dropout)
+        self.pos_encoder = PositionalEncoding(hidden_dim, dropout)
 
         # Query Embeddings
-        self.query_embed = nn.Embedding(num_queries, feat_dim)
+        self.query_embed = nn.Embedding(num_queries, hidden_dim)
 
         # Prediction Heads
-        self.frame_embed = nn.Linear(feat_dim, 1)  # Predict normalized frame index
+        # Predict normalized frame index
+        self.frame_embed = nn.Linear(hidden_dim, 1)
         self.class_embed = nn.Linear(
-            feat_dim, num_classes
+            hidden_dim, num_classes
         )  # Predict event class probabilities
 
     def forward(self, frames):
@@ -67,6 +69,7 @@ class DeTRPrediction(nn.Module):
         )
 
         # Prepare inputs for the Transformer
+        src = self.in_proj(src)  # (batch_size, seq_len, feat_dim)
         src = src.permute(1, 0, 2)  # (seq_len, batch_size, feat_dim)
         src = self.pos_encoder(src)
 
@@ -74,21 +77,24 @@ class DeTRPrediction(nn.Module):
         query_embed = self.query_embed.weight.unsqueeze(1).repeat(
             1, batch_size, 1
         )  # (num_queries, batch_size, feat_dim)
-        query_embed = self.pos_decoder(query_embed)
 
         # Transformer forward pass
-        memory = self.transformer.encoder(src)
-        hs = self.transformer.decoder(query_embed, memory)
+        # memory = self.transformer.encoder(src)
+        # hs = self.transformer.decoder(query_embed, memory)
+        hs = self.transformer(tgt=query_embed, memory=src)
 
         # Output embeddings
-        outputs_class = self.class_embed(hs)  # (num_queries, batch_size, num_classes)
-        outputs_frame = self.frame_embed(hs).squeeze(-1)  # (num_queries, batch_size)
+        # (num_queries, batch_size, num_classes)
+        outputs_class = self.class_embed(hs)
+        outputs_frame = self.frame_embed(
+            hs).squeeze(-1)  # (num_queries, batch_size)
 
         # Transpose back to (batch_size, num_queries, ...)
         outputs_class = outputs_class.permute(
             1, 0, 2
         )  # (batch_size, num_queries, num_classes)
-        outputs_frame = outputs_frame.permute(1, 0)  # (batch_size, num_queries)
+        outputs_frame = outputs_frame.permute(
+            1, 0)  # (batch_size, num_queries)
 
         return {"pred_logits": outputs_class, "pred_frames": outputs_frame}
 
@@ -96,10 +102,12 @@ class DeTRPrediction(nn.Module):
         # get device of this model
         device = next(self.parameters()).device
 
-        frames = batch["frames"].to(device)  # Shape: (batch_size, clip_len, C, H, W)
+        # Shape: (batch_size, clip_len, C, H, W)
+        frames = batch["frames"].to(device)
         targets = {
             "labels": batch["labels"],  # List of tensors (length batch_size)
-            "timesteps": batch["timesteps"],  # List of tensors (length batch_size)
+            # List of tensors (length batch_size)
+            "timesteps": batch["timesteps"],
         }
 
         # Move targets to device
@@ -113,12 +121,14 @@ class DeTRPrediction(nn.Module):
         indices = hungarian_match(outputs, targets)
 
         # Compute loss
-        loss = compute_loss(outputs, targets, indices, self.num_classes, fg_weight)
+        loss = compute_loss(outputs, targets, indices,
+                            self.num_classes, fg_weight)
 
         return outputs, loss
 
     def print_stats(self):
         print(f"Model params: {sum(p.numel() for p in self.parameters()):,}")
+
 
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, dropout=0.1, max_len=5000):
@@ -175,7 +185,8 @@ def hungarian_match(outputs, targets):
         # Compute the classification cost.
         # Since "no class" is label 0, we need to adjust the indices.
         # We exclude the background class when computing cost_class.
-        cost_class = -out_prob[:, tgt_labels]  # Shape: (num_queries, num_gt_events)
+        # Shape: (num_queries, num_gt_events)
+        cost_class = -out_prob[:, tgt_labels]
 
         # Frame regression cost: L1 distance
         cost_frames = torch.cdist(
@@ -263,7 +274,8 @@ def compute_loss(outputs, targets, indices, num_classes, fg_weight=5.0):
         fg_mask = target_cls_matched > 0
 
         loss_frames = (
-            F.l1_loss(src_frames_matched, target_frames_matched, reduction="none")
+            F.l1_loss(src_frames_matched,
+                      target_frames_matched, reduction="none")
             * fg_mask
         )
 
@@ -277,7 +289,7 @@ def compute_loss(outputs, targets, indices, num_classes, fg_weight=5.0):
 
 if __name__ == "__main__":
     # Test DeTRPrediction
-    model = DeTRPrediction( backbone='rny002', num_classes=7, num_queries=100)
+    model = DeTRPrediction(backbone='rny002', num_classes=7, num_queries=100)
     frames = torch.randn(4, 100, 3, 224, 224)
     targets = dict(
         labels=torch.randint(0, 7, (4, 3)),  # 3 ground truth events
