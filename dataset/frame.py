@@ -159,7 +159,6 @@ def _load_frame_deferred(gpu_transform, batch, device):
                     frame_mix[i].to(device))
     return frame
 
-
 def _get_img_transforms(
         is_eval,
         crop_dim,
@@ -185,7 +184,19 @@ def _get_img_transforms(
     if modality == 'rgb':
         if not is_eval:
             img_transforms.append(
-                transforms.RandomHorizontalFlip())
+                transforms.RandomChoice(
+                    [
+                        transforms.RandomHorizontalFlip(p=1.0),
+                        transforms.RandomZoomOut(p=1.0),
+                        transforms.RandomPerspective(distortion_scale=0.6, p=1.0),
+                        transforms.RandomRotation(degrees=(0, 45)),
+                        transforms.RandomAffine(
+                            degrees=(30, 70), translate=(0.1, 0.3), scale=(0.5, 0.75)
+                        ),
+                        nn.Identity()
+                    ]
+                )
+            )
 
             if not defer_transform:
                 img_transforms.extend([
