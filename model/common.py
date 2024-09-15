@@ -30,7 +30,15 @@ class ABCModel:
 class BaseRGBModel(ABCModel):
 
     def get_optimizer(self, opt_args):
-        return torch.optim.AdamW(self._get_params(), **opt_args), \
+        base_lr = opt_args.get('lr', 1e-4)
+        backbone_lr = base_lr / 10
+
+        param_groups = [
+                {'params': param, 'weight_decay': opt_args.get('weight_decay', 1e-4), 'lr': backbone_lr if 'backbone' in name else base_lr}
+                for name, param in self._model.named_parameters()
+            ]
+
+        return torch.optim.AdamW(param_groups), \
             torch.cuda.amp.GradScaler() if self.device == 'cuda' else None
 
     """ Assume there is a self._model """
@@ -128,13 +136,14 @@ class SingleStageTCN(nn.Module):
 class MLP(nn.Module):
     """ Very simple multi-layer perceptron (also called FFN)"""
 
-    def __init__(self, input_dim, hidden_dim, output_dim, num_layers):
+    def __init__(self, input_dim, hidden_dim, output_dim, num_layers, dropout=0.1):
         super().__init__()
+        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
         self.num_layers = num_layers
         h = [hidden_dim] * (num_layers - 1)
         self.layers = nn.ModuleList(nn.Linear(n, k) for n, k in zip([input_dim] + h, h + [output_dim]))
 
     def forward(self, x):
         for i, layer in enumerate(self.layers):
-            x = F.relu(layer(x)) if i < self.num_layers - 1 else layer(x)
+            x = F.relu(self.dropout(layer(x))) if i < self.num_layers - 1 else layer(x)
         return x

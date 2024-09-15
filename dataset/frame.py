@@ -170,16 +170,14 @@ def _get_img_transforms(
 ):
     crop_transform = None
     if crop_dim is not None:
-        if multi_crop:
-            assert is_eval
-            crop_transform = ThreeCrop(crop_dim)
-        elif is_eval:
-            crop_transform = transforms.CenterCrop(crop_dim)
-        elif same_transform:
-            print('=> Using seeded crops!')
-            crop_transform = SeedableRandomSquareCrop(crop_dim)
-        else:
-            crop_transform = transforms.RandomCrop(crop_dim)
+        crop_transform = [
+            v2.RandomChoice(
+                [
+                    v2.RandomCrop((crop_dim, crop_dim)),
+                    v2.RandomResizedCrop((crop_dim, crop_dim)),
+                    v2.Resize(size=(crop_dim, crop_dim)),  # No-op
+                ]
+            )] if not is_eval else [v2.Resize(size=(crop_dim, crop_dim))]
 
     img_transforms = []
     if modality == 'rgb':
@@ -276,7 +274,9 @@ def _get_img_transforms(
 
     # img_transform = torch.jit.script(nn.Sequential(*img_transforms))
     img_transform = v2.Compose(img_transforms + [v2.Resize(size=(crop_dim, crop_dim))])
-    return crop_transform, img_transform
+    crop_transforms = v2.Compose(crop_transform)
+    print(f"Crop transform: {crop_transform}, Img transform: {img_transforms}")
+    return crop_transforms, img_transform
 
 
 def _print_info_helper(src_file, labels):

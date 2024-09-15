@@ -4,6 +4,7 @@ import math
 from torch import nn
 import torch.nn.functional as F
 from scipy.optimize import linear_sum_assignment
+from model.common import MLP
 
 
 class DeTRPrediction(nn.Module):
@@ -15,8 +16,7 @@ class DeTRPrediction(nn.Module):
         num_queries=100,
         dropout=0.1,
         nheads=8,
-        num_encoder_layers=6,
-        num_decoder_layers=6,
+        depth=6,
     ):
         super().__init__()
         self.num_queries = num_queries
@@ -34,17 +34,16 @@ class DeTRPrediction(nn.Module):
         self.backbone.head.fc = nn.Identity()
 
         self.in_proj = nn.Linear(feat_dim, hidden_dim)
-
         # Transformer Decoder
         self.transformer = nn.TransformerDecoder(
             nn.TransformerDecoderLayer(
                 d_model=hidden_dim,
                 nhead=nheads,
-                dim_feedforward=hidden_dim * 4,
+                dim_feedforward=hidden_dim * 2,
                 dropout=dropout,
                 activation="relu",
             ),
-            num_decoder_layers,
+            depth,
         )
 
         # Positional Encoding
@@ -55,10 +54,8 @@ class DeTRPrediction(nn.Module):
 
         # Prediction Heads
         # Predict normalized frame index
-        self.frame_embed = nn.Linear(hidden_dim, 1)
-        self.class_embed = nn.Linear(
-            hidden_dim, num_classes
-        )  # Predict event class probabilities
+        self.frame_embed = MLP(hidden_dim, hidden_dim * 2, 1, 2, dropout=dropout)
+        self.class_embed = MLP(hidden_dim, hidden_dim * 2, num_classes, 2, dropout=dropout)
 
     def forward(self, frames):
         # src shape: (batch_size, seq_len, feat_dim)
@@ -86,17 +83,15 @@ class DeTRPrediction(nn.Module):
         # Output embeddings
         # (num_queries, batch_size, num_classes)
         outputs_class = self.class_embed(hs)
-        outputs_frame = self.frame_embed(
-            hs).squeeze(-1)  # (num_queries, batch_size)
+        outputs_frame = self.frame_embed(hs).squeeze(-1)  # (num_queries, batch_size)
 
         # Transpose back to (batch_size, num_queries, ...)
         outputs_class = outputs_class.permute(
             1, 0, 2
         )  # (batch_size, num_queries, num_classes)
-        outputs_frame = outputs_frame.permute(
-            1, 0)  # (batch_size, num_queries)
+        outputs_frame = outputs_frame.permute(1, 0)  # (batch_size, num_queries)
 
-        return {"pred_logits": outputs_class, "pred_frames": outputs_frame}
+        return {"pred_logits": outputs_class, "pred_frames": outputs_frame.sigmoid()}
 
     def forward_train(self, batch, fg_weight=5.0):
         # get device of this model
@@ -121,8 +116,7 @@ class DeTRPrediction(nn.Module):
         indices = hungarian_match(outputs, targets)
 
         # Compute loss
-        loss = compute_loss(outputs, targets, indices,
-                            self.num_classes, fg_weight)
+        loss = compute_loss(outputs, targets, indices, self.num_classes, fg_weight)
 
         return outputs, loss
 
@@ -253,9 +247,11 @@ def compute_loss(outputs, targets, indices, num_classes, fg_weight=5.0):
         src_logits.device
     )
 
-    loss_ce = F.cross_entropy(
-        src_logits, target_classes, reduction="mean", weight=weight
-    )
+    # loss_ce = F.cross_entropy(
+    #     src_logits, target_classes, reduction="mean", weight=weight
+    # )
+
+    loss_ce = focal_loss(src_logits, target_classes, alpha=1, gamma=2, reduction='mean')
 
     # Frame regression loss
     loss_frames = torch.tensor(0.0, device=device)
@@ -274,8 +270,7 @@ def compute_loss(outputs, targets, indices, num_classes, fg_weight=5.0):
         fg_mask = target_cls_matched > 0
 
         loss_frames = (
-            F.l1_loss(src_frames_matched,
-                      target_frames_matched, reduction="none")
+            F.l1_loss(src_frames_matched, target_frames_matched, reduction="none")
             * fg_mask
         )
 
@@ -287,9 +282,37 @@ def compute_loss(outputs, targets, indices, num_classes, fg_weight=5.0):
     return {"loss": total_loss, "loss_ce": loss_ce, "loss_frames": loss_frames}
 
 
+def focal_loss(inputs, targets, alpha=1, gamma=2, reduction='mean'):
+    """
+    Compute the focal loss between `inputs` and the ground truth `targets`.
+
+    Args:
+        inputs (Tensor): Predictions of shape (N, C) where C is the number of classes.
+        targets (Tensor): Ground truth labels of shape (N,).
+        alpha (float, optional): Scaling factor for the focal loss. Default is 1.
+        gamma (float, optional): Focusing parameter to adjust the rate at which easy
+                                 examples are down-weighted. Default is 2.
+        reduction (str, optional): Specifies the reduction to apply to the output.
+                                   'none' | 'mean' | 'sum'. Default is 'mean'.
+    
+    Returns:
+        Tensor: Computed focal loss.
+    """
+    BCE_loss = F.cross_entropy(inputs, targets, reduction='none')  # Compute cross-entropy loss
+    pt = torch.exp(-BCE_loss)  # Compute the probability of the target class
+    F_loss = alpha * (1 - pt) ** gamma * BCE_loss  # Compute the focal loss
+
+    if reduction == 'mean':
+        return torch.mean(F_loss)  # Return mean focal loss
+    elif reduction == 'sum':
+        return torch.sum(F_loss)   # Return sum of focal loss
+    else:
+        return F_loss  # Return without reduction
+
+
 if __name__ == "__main__":
     # Test DeTRPrediction
-    model = DeTRPrediction(backbone='rny002', num_classes=7, num_queries=100)
+    model = DeTRPrediction(backbone="rny002", num_classes=7, num_queries=100)
     frames = torch.randn(4, 100, 3, 224, 224)
     targets = dict(
         labels=torch.randint(0, 7, (4, 3)),  # 3 ground truth events

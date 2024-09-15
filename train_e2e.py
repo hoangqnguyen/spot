@@ -124,7 +124,10 @@ class ModelWrapper(BaseRGBModel):
             num_classes=num_classes,
             backbone=feature_arch,
             hidden_dim=256,
-            num_queries=100,
+            num_queries=10,
+            depth=6,
+            nheads=8,
+            dropout=.1,
         )
         self._model.print_stats()
 
@@ -398,7 +401,7 @@ def main(args):
 
     def worker_init_fn(id):
         random.seed(id + epoch * 100)
-    loader_batch_size = args.batch_size // args.acc_grad_iter
+    loader_batch_size = args.batch_size
     train_loader = DataLoader(
         train_data, shuffle=False, batch_size=loader_batch_size,
         pin_memory=True, num_workers=get_num_train_workers(args),
@@ -412,7 +415,7 @@ def main(args):
         len(classes) + 1, args.feature_arch, args.temporal_arch,
         clip_len=args.clip_len, modality=args.modality,
         multi_gpu=args.gpu_parallel)
-    optimizer, scaler = model.get_optimizer({'lr': args.learning_rate})
+    optimizer, scaler = model.get_optimizer({'lr': args.learning_rate, "weight_decay": 1e-4})
 
     # Warmup schedule
     num_steps_per_epoch = len(train_loader) // args.acc_grad_iter
