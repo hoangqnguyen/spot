@@ -34,6 +34,10 @@ class Conv3dAttention(nn.Module):
             stride=(1, spatial_downsampling, spatial_downsampling),
             padding=(kernel_size // 2, kernel_size // 2, kernel_size // 2),
         )
+        self.ln_q = nn.LayerNorm(n_embd // n_head)
+        self.ln_k = nn.LayerNorm(n_embd // n_head)
+        self.ln_v = nn.LayerNorm(n_embd // n_head)
+
         self.c_proj = nn.Linear(n_embd, n_embd)
 
         self.n_head = n_head
@@ -47,9 +51,12 @@ class Conv3dAttention(nn.Module):
         H, W = qkv.shape[-2:]
         q, k, v = rearrange(qkv, "b c t h w -> b (t h w) c").chunk(3, dim=-1)
         # return q 
-        k = k.view(B, -1, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        q = q.view(B, -1, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        v = v.view(B, -1, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        k = self.ln_q(k.view(B, -1, self.n_head, C // self.n_head).transpose(1, 2)) # (B, nh, T, hs)
+        q = self.ln_k(q.view(B, -1, self.n_head, C // self.n_head).transpose(1, 2)) # (B, nh, T, hs)
+        v = self.ln_v(v.view(B, -1, self.n_head, C // self.n_head).transpose(1, 2)) # (B, nh, T, hs)
+        # q = q / torch.norm(q, dim=-1, keepdim=True)
+        # k = k / torch.norm(k, dim=-1, keepdim=True)
+        # v = v / torch.norm(v, dim=-1, keepdim=True)
         y = F.scaled_dot_product_attention(
             q, k, v, is_causal=self.is_causal
         )  # flash attention
@@ -80,7 +87,13 @@ class Block(nn.Module):
 
     def forward(self, x):
         x = self.res1(x) + self.attn(self.norm_1(x))
+        if x.isnan().any():
+            print("NAN in attn")
+            breakpoint()
         x = self.res2(x) + self.prj(self.norm_2(x))
+        if x.isnan().any():
+            print("NAN in prj")
+            breakpoint()
         return x
 
 
@@ -100,9 +113,21 @@ class Spotformer(nn.Module):
     def forward(self, x):
         b, t = x.shape[:2]
         x = self.patch_embed(rearrange(x, "b t c h w -> (b t) c h w"))
+        if x.isnan().any():
+            print("NAN in patch embed")
+            breakpoint()
         x = self.pos_encoder(rearrange(x, "(b t) c h w -> b h w t c", t=t))
+        if x.isnan().any():
+            print("NAN in pos encoder")
+            breakpoint()
         x = self.encoder(rearrange(x, "b h w t c -> b c t h w")).flatten(2, -1).permute(0, 2, 1)
+        if x.isnan().any():
+            print("NAN in encoder")
+            breakpoint()
         x = self.fc(x)
+        if x.isnan().any():
+            print("NAN in fc")
+            breakpoint()
         return x
 
 
