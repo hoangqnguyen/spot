@@ -186,9 +186,9 @@ class ActionSpotDataset(Dataset):
         self.use_ball_loc_pseudo = use_ball_loc_pseudo
 
         if use_ball_loc_pseudo:
-            ball_loc_pseudo_file = os.path.join(os.path.dirname(label_file), "ball_loc_pseudo_normed.npz")
+            ball_loc_pseudo_file = os.path.join(os.path.dirname(label_file), "ball_loc_pseudo_normed.pt")
             assert os.path.exists(ball_loc_pseudo_file), f"File {ball_loc_pseudo_file} does not exist"
-            self._ball_loc_pseudo = np.load(ball_loc_pseudo_file)
+            self._ball_loc_pseudo = torch.load(ball_loc_pseudo_file)
 
         self._clip_len = clip_len
         assert clip_len > 0
@@ -283,6 +283,7 @@ class ActionSpotDataset(Dataset):
                     labels[i] = label
                     if event_xys is not None:
                         if self.use_ball_loc_pseudo:
+                            # try:
                             event_xys[i] = self._ball_loc_pseudo[video_meta["video"]][event_frame]
                         else:
                             event_xys[i] = event.get("xy", [0, 0])
