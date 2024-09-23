@@ -852,6 +852,7 @@ def get_datasets(args):
             args.clip_len,
             dataset_len,
             is_eval=False,
+            use_ball_loc_pseudo=True,
             **dataset_kwargs,
         )
         train_data.print_info()

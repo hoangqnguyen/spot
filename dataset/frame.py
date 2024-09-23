@@ -169,6 +169,7 @@ class ActionSpotDataset(Dataset):
         # and end of videos
         fg_upsample=-1,  # Sample foreground explicitly
         dataset="finediving",
+        use_ball_loc_pseudo=False,
     ):
         self._dataset = dataset
         self._src_file = label_file
@@ -179,6 +180,15 @@ class ActionSpotDataset(Dataset):
         # Sample videos weighted by their length
         num_frames = [v["num_frames"] for v in self._labels]
         self._weights_by_length = np.array(num_frames) / np.sum(num_frames)
+
+        
+        # pseudolabels for xy
+        self.use_ball_loc_pseudo = use_ball_loc_pseudo
+
+        if use_ball_loc_pseudo:
+            ball_loc_pseudo_file = os.path.join(os.path.dirname(label_file), "ball_loc_pseudo_normed.npz")
+            assert os.path.exists(ball_loc_pseudo_file), f"File {ball_loc_pseudo_file} does not exist"
+            self._ball_loc_pseudo = np.load(ball_loc_pseudo_file)
 
         self._clip_len = clip_len
         assert clip_len > 0
@@ -207,6 +217,8 @@ class ActionSpotDataset(Dataset):
         self._crop_dim = crop_dim
         self._transform = _get_img_transforms(self._crop_dim, is_eval)
         self._frame_reader = FrameReader(frame_dir, modality)
+        
+
 
     def _sample_uniform(self):
         video_meta = random.choices(self._labels, weights=self._weights_by_length)[0]
@@ -270,7 +282,10 @@ class ActionSpotDataset(Dataset):
                 ):
                     labels[i] = label
                     if event_xys is not None:
-                        event_xys[i] = event.get("xy", [0, 0])
+                        if self.use_ball_loc_pseudo:
+                            event_xys[i] = self._ball_loc_pseudo[video_meta["video"]][event_frame]
+                        else:
+                            event_xys[i] = event.get("xy", [0, 0])
 
         frames = self._frame_reader.load_frames(
             video_meta["video"],
