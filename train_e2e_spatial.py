@@ -378,10 +378,27 @@ class E2EModel(BaseRGBModel):
 
             self._predict_location = predict_location
             if self._predict_location:
+                # self._pred_loc = nn.Sequential(
+                #     MLP(
+                #         hidden_dim, hidden_dim * 4, output_dim=hidden_dim, num_layers=3
+                #     ),
+                #     nn.Linear(hidden_dim, 2),
+                # )
+
+                from g_mlp_pytorch.g_mlp_pytorch   import Residual, gMLPBlock, PreNorm
+
                 self._pred_loc = nn.Sequential(
-                    MLP(
-                        hidden_dim, hidden_dim * 4, output_dim=hidden_dim, num_layers=3
-                    ),
+                    *[
+                        Residual(
+                            PreNorm(
+                                hidden_dim,
+                                gMLPBlock(
+                                    dim=hidden_dim, dim_ff=hidden_dim * 2, seq_len=clip_len, heads=4
+                                ),
+                            )
+                        )
+                        for _ in range(3)
+                    ],
                     nn.Linear(hidden_dim, 2),
                 )
                 # from model.common import ImprovedLocationPredictor
