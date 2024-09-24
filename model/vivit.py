@@ -13,6 +13,7 @@ class TubletEmbedding(nn.Module):
             kernel_size=patch_size,
             stride=patch_size,
         )
+        self.norm = nn.BatchNorm3d(embed_dim)
 
     def forward(self, frames):
         """
@@ -20,6 +21,7 @@ class TubletEmbedding(nn.Module):
         """
         x = rearrange(frames, "b t c h w -> b c t h w")
         x = self.projection(x)
+        x = self.norm(x)
         return rearrange(x, "b c t h w -> b (t h w) c")
 
 
