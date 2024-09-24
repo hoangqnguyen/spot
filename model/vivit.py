@@ -57,7 +57,9 @@ class MLP(nn.Module):
 
 
 class ViViT(nn.Module):
-    def __init__(self, seq_len, patch_size, emb_dim, depth, nhead, dropout=0.1, max_len=1024) -> None:
+    def __init__(
+        self, seq_len, patch_size, emb_dim, depth, nhead, dropout=0.1, max_len=1024
+    ) -> None:
         super().__init__()
         self.emb_dim = emb_dim
         self.tub_emb = TubletEmbedding(emb_dim, patch_size)
@@ -92,10 +94,12 @@ class ViViTSpot(nn.Module):
         super().__init__()
         self.arch = ViViT(**kwargs)
         emb_dim = self.arch.emb_dim
-        self.pred_cls = MLP(emb_dim, emb_dim * 2, num_classes, num_layers=3)
+        # self.pred_cls = MLP(emb_dim, emb_dim * 2, num_classes, num_layers=3)
+        self.pred_cls = nn.Linear(emb_dim, num_classes)
         self._predict_location = predict_location
         if predict_location:
-            self.pred_xy = MLP(emb_dim, emb_dim * 2, 2, num_layers=3)
+            # self.pred_xy = MLP(emb_dim, emb_dim * 2, 2, num_layers=3)
+            self.pred_xy = nn.Linear(emb_dim, 2)
 
     def print_stats(self):
         print(f"Model params: {sum(p.numel() for p in self.parameters()):,d}")
@@ -111,10 +115,21 @@ class ViViTSpot(nn.Module):
             return {"im_feat": cls_logits, "loc_feat": xy_logits}
         return {"im_feat": cls_logits}
 
+
 if __name__ == "__main__":
     b, t, h, w = 8, 64, 224, 224
     frames = torch.randn(b, t, 3, h, w).cuda()
-    vspot = ViViTSpot(num_classes=7, seq_len=t, max_len=1024, predict_location=True, patch_size=16, emb_dim=384, depth=3, nhead=4, dropout=0.1).cuda()
+    vspot = ViViTSpot(
+        num_classes=7,
+        seq_len=t,
+        max_len=1024,
+        predict_location=True,
+        patch_size=16,
+        emb_dim=384,
+        depth=3,
+        nhead=4,
+        dropout=0.1,
+    ).cuda()
     vspot.print_stats()
     pred_dict = vspot(frames)
     for k, v in pred_dict.items():
