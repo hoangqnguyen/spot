@@ -37,7 +37,10 @@ class BaseRGBModel(ABCModel):
                 {'params': param, 'lr': pred_loc_lr if '_pred_loc' in name else base_lr}
                 for name, param in self._model.named_parameters()
             ]
-        return torch.optim.AdamW(param_groups), \
+        
+        # optimizer = torch.optim.AdamW(param_groups)
+        optimizer = torch.optim.SGD(param_groups, momentum=0.9, weight_decay=1e-4)
+        return optimizer, \
             torch.cuda.amp.GradScaler() if self.device == 'cuda' else None
 
     """ Assume there is a self._model """
