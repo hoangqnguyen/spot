@@ -4,8 +4,6 @@ import math
 from torch import nn
 import torch.nn.functional as F
 from scipy.optimize import linear_sum_assignment
-from model.common import MLP
-
 
 class DeTRPrediction(nn.Module):
     def __init__(
@@ -54,8 +52,10 @@ class DeTRPrediction(nn.Module):
 
         # Prediction Heads
         # Predict normalized frame index
-        self.frame_embed = MLP(hidden_dim, hidden_dim * 2, 1, 2, dropout=dropout)
-        self.class_embed = MLP(hidden_dim, hidden_dim * 2, num_classes, 2, dropout=dropout)
+        # self.frame_embed = MLP(hidden_dim, hidden_dim * 2, 1, 2, dropout=dropout)
+        # self.class_embed = MLP(hidden_dim, hidden_dim * 2, num_classes, 2, dropout=dropout)
+        self.frame_embed = nn.Linear(hidden_dim, 1)
+        self.class_embed = nn.Linear(hidden_dim, num_classes)
 
     def forward(self, frames):
         # src shape: (batch_size, seq_len, feat_dim)
@@ -91,7 +91,7 @@ class DeTRPrediction(nn.Module):
         )  # (batch_size, num_queries, num_classes)
         outputs_frame = outputs_frame.permute(1, 0)  # (batch_size, num_queries)
 
-        return {"pred_logits": outputs_class, "pred_frames": outputs_frame.sigmoid()}
+        return {"pred_logits": outputs_class, "pred_frames": outputs_frame}
 
     def forward_train(self, batch, fg_weight=5.0):
         # get device of this model
@@ -113,7 +113,7 @@ class DeTRPrediction(nn.Module):
         outputs = self.forward(frames)
 
         # Matching
-        indices = hungarian_match(outputs, targets)
+        indices = hungarian_matcher(outputs, targets)
 
         # Compute loss
         loss = compute_loss(outputs, targets, indices, self.num_classes, fg_weight)
@@ -144,7 +144,7 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
 
 
-def hungarian_match(outputs, targets):
+def hungarian_matcher(outputs, targets):
     bs, num_queries = outputs["pred_logits"].shape[:2]
     device = outputs["pred_logits"].device
 
@@ -193,7 +193,10 @@ def hungarian_match(outputs, targets):
         C = C.detach().cpu().numpy()
 
         # Solve the assignment problem
-        row_ind, col_ind = linear_sum_assignment(C)
+        try:
+            row_ind, col_ind = linear_sum_assignment(C)
+        except:
+            breakpoint()
 
         indices.append(
             (
@@ -243,15 +246,16 @@ def compute_loss(outputs, targets, indices, num_classes, fg_weight=5.0):
         target_classes[src_idx] = matched_classes
 
     # Classification loss
-    weight = torch.FloatTensor([1] + [fg_weight] * (num_classes - 1)).to(
-        src_logits.device
-    )
+
+    # weight = torch.FloatTensor([1] + [fg_weight] * (num_classes - 1)).to(
+    #     src_logits.device
+    # )
 
     # loss_ce = F.cross_entropy(
     #     src_logits, target_classes, reduction="mean", weight=weight
     # )
 
-    loss_ce = focal_loss(src_logits, target_classes, alpha=1, gamma=2, reduction='mean')
+    loss_ce = focal_loss(src_logits, target_classes, alpha=1, gamma=2, reduction="mean")
 
     # Frame regression loss
     loss_frames = torch.tensor(0.0, device=device)
@@ -270,7 +274,7 @@ def compute_loss(outputs, targets, indices, num_classes, fg_weight=5.0):
         fg_mask = target_cls_matched > 0
 
         loss_frames = (
-            F.l1_loss(src_frames_matched, target_frames_matched, reduction="none")
+            F.l1_loss(src_frames_matched.sigmoid(), target_frames_matched, reduction="none")
             * fg_mask
         )
 
@@ -282,7 +286,7 @@ def compute_loss(outputs, targets, indices, num_classes, fg_weight=5.0):
     return {"loss": total_loss, "loss_ce": loss_ce, "loss_frames": loss_frames}
 
 
-def focal_loss(inputs, targets, alpha=1, gamma=2, reduction='mean'):
+def focal_loss(inputs, targets, alpha=1, gamma=2, reduction="mean"):
     """
     Compute the focal loss between `inputs` and the ground truth `targets`.
 
@@ -294,32 +298,34 @@ def focal_loss(inputs, targets, alpha=1, gamma=2, reduction='mean'):
                                  examples are down-weighted. Default is 2.
         reduction (str, optional): Specifies the reduction to apply to the output.
                                    'none' | 'mean' | 'sum'. Default is 'mean'.
-    
+
     Returns:
         Tensor: Computed focal loss.
     """
-    BCE_loss = F.cross_entropy(inputs, targets, reduction='none')  # Compute cross-entropy loss
+    BCE_loss = F.cross_entropy(
+        inputs, targets, reduction="none"
+    )  # Compute cross-entropy loss
     pt = torch.exp(-BCE_loss)  # Compute the probability of the target class
     F_loss = alpha * (1 - pt) ** gamma * BCE_loss  # Compute the focal loss
 
-    if reduction == 'mean':
+    if reduction == "mean":
         return torch.mean(F_loss)  # Return mean focal loss
-    elif reduction == 'sum':
-        return torch.sum(F_loss)   # Return sum of focal loss
+    elif reduction == "sum":
+        return torch.sum(F_loss)  # Return sum of focal loss
     else:
         return F_loss  # Return without reduction
 
 
 if __name__ == "__main__":
     # Test DeTRPrediction
-    model = DeTRPrediction(backbone="rny002", num_classes=7, num_queries=100)
-    frames = torch.randn(4, 100, 3, 224, 224)
+    model = DeTRPrediction(backbone="rny002", num_classes=7, num_queries=10)
+    frames = torch.randn(2, 32, 3, 224, 224)
     targets = dict(
-        labels=torch.randint(0, 7, (4, 3)),  # 3 ground truth events
-        timesteps=torch.rand(4, 3),  # 3 ground
+        labels=torch.randint(0, 7, (2, 3)),  # 3 ground truth events
+        timesteps=torch.rand(2, 3),  # 3 ground
     )
     outputs = model(frames)
-    indices = hungarian_match(outputs, targets)
+    indices = hungarian_matcher(outputs, targets)
     loss = compute_loss(outputs, targets, indices, num_classes=7)
     model.print_stats()
     print(outputs["pred_logits"].shape)  # Expected: torch.Size([4, 100, 10])
