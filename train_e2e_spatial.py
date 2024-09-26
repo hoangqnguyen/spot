@@ -89,6 +89,14 @@ def get_args():
         help="Spotting architecture, after spatial pooling",
     )
 
+    parser.add_argument(
+        "-p",
+        "--pred_loc_arch",
+        type=str,
+        default="mlp",
+        choices=["mlp", "gmlp"],
+    )
+
     parser.add_argument("--clip_len", type=int, default=100)
     parser.add_argument("--crop_dim", type=int, default=224)
     parser.add_argument("--batch_size", type=int, default=8)
@@ -220,6 +228,7 @@ class E2EModel(BaseRGBModel):
             clip_len,
             modality,
             predict_location=False,
+            pred_loc_arch="mlp",
         ):
             super().__init__()
             is_rgb = modality == "rgb"
@@ -378,29 +387,35 @@ class E2EModel(BaseRGBModel):
 
             self._predict_location = predict_location
             if self._predict_location:
-                # self._pred_loc = nn.Sequential(
-                #     MLP(
-                #         hidden_dim, hidden_dim * 4, output_dim=hidden_dim, num_layers=3
-                #     ),
-                #     nn.Linear(hidden_dim, 2),
-                # )
 
-                from g_mlp_pytorch.g_mlp_pytorch   import Residual, gMLPBlock, PreNorm
+                if pred_loc_arch == "mlp":
+                    self._pred_loc = nn.Sequential(
+                        MLP(
+                            hidden_dim, hidden_dim * 4, output_dim=hidden_dim, num_layers=3
+                        ),
+                        nn.Linear(hidden_dim, 2),
+                    )
 
-                self._pred_loc = nn.Sequential(
-                    *[
-                        Residual(
-                            PreNorm(
-                                hidden_dim,
-                                gMLPBlock(
-                                    dim=hidden_dim, dim_ff=hidden_dim * 2, seq_len=clip_len, heads=4
-                                ),
+                elif pred_loc_arch == "gmlp":
+                    from g_mlp_pytorch.g_mlp_pytorch   import Residual, gMLPBlock, PreNorm
+
+                    self._pred_loc = nn.Sequential(
+                        *[
+                            Residual(
+                                PreNorm(
+                                    hidden_dim,
+                                    gMLPBlock(
+                                        dim=hidden_dim, dim_ff=hidden_dim * 2, seq_len=clip_len, heads=2
+                                    ),
+                                )
                             )
-                        )
-                        for _ in range(3)
-                    ],
-                    nn.Linear(hidden_dim, 2),
-                )
+                            for _ in range(2)
+                        ],
+                        nn.Linear(hidden_dim, 2),
+                    )
+                else:
+                    raise NotImplementedError(f"Unimplemented location predictor: {pred_loc_arch}")
+
                 # from model.common import ImprovedLocationPredictor
 
                 # self._pred_loc = ImprovedLocationPredictor(
@@ -462,6 +477,7 @@ class E2EModel(BaseRGBModel):
         device="cuda",
         predict_location=False,
         multi_gpu=False,
+        pred_loc_arch="mlp",
     ):
         self.device = device
         self._multi_gpu = multi_gpu
@@ -472,6 +488,7 @@ class E2EModel(BaseRGBModel):
             clip_len,
             modality,
             predict_location,
+            pred_loc_arch=pred_loc_arch,
         )
         # self._model = torch.compile(self._model)
         self._model.print_stats()
@@ -992,6 +1009,7 @@ def main(args):
         modality=args.modality,
         multi_gpu=args.gpu_parallel,
         predict_location=args.predict_location,
+        pred_loc_arch=args.pred_loc_arch,
     )
 
     if not args.eval_only:
