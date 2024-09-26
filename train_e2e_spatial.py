@@ -322,6 +322,26 @@ class E2EModel(BaseRGBModel):
                 self._pred_fine = ASFormerPrediction(feat_dim, num_classes, 3)
             elif temporal_arch == "":
                 self._pred_fine = FCPrediction(feat_dim, num_classes)
+            elif temporal_arch == "gmlp":
+                from g_mlp_pytorch.g_mlp_pytorch import Residual, gMLPBlock, PreNorm
+                hidden_dim = feat_dim
+                self._pred_fine = nn.Sequential(
+                    *[
+                        Residual(
+                            PreNorm(
+                                hidden_dim,
+                                gMLPBlock(
+                                    dim=hidden_dim,
+                                    dim_ff=hidden_dim * 2,
+                                    seq_len=clip_len,
+                                    heads=2,
+                                ),
+                            )
+                        )
+                        for _ in range(2)
+                    ],
+                    nn.Linear(hidden_dim, num_classes),
+                )
             elif temporal_arch == "transformer_enc_only_base_11m":
                 from positional_encodings.torch_encodings import (
                     PositionalEncoding1D,
@@ -391,13 +411,16 @@ class E2EModel(BaseRGBModel):
                 if pred_loc_arch == "mlp":
                     self._pred_loc = nn.Sequential(
                         MLP(
-                            hidden_dim, hidden_dim * 4, output_dim=hidden_dim, num_layers=3
+                            hidden_dim,
+                            hidden_dim * 4,
+                            output_dim=hidden_dim,
+                            num_layers=3,
                         ),
                         nn.Linear(hidden_dim, 2),
                     )
 
                 elif pred_loc_arch == "gmlp":
-                    from g_mlp_pytorch.g_mlp_pytorch   import Residual, gMLPBlock, PreNorm
+                    from g_mlp_pytorch.g_mlp_pytorch import Residual, gMLPBlock, PreNorm
 
                     self._pred_loc = nn.Sequential(
                         *[
@@ -405,7 +428,10 @@ class E2EModel(BaseRGBModel):
                                 PreNorm(
                                     hidden_dim,
                                     gMLPBlock(
-                                        dim=hidden_dim, dim_ff=hidden_dim * 2, seq_len=clip_len, heads=2
+                                        dim=hidden_dim,
+                                        dim_ff=hidden_dim * 2,
+                                        seq_len=clip_len,
+                                        heads=2,
                                     ),
                                 )
                             )
@@ -414,7 +440,9 @@ class E2EModel(BaseRGBModel):
                         nn.Linear(hidden_dim, 2),
                     )
                 else:
-                    raise NotImplementedError(f"Unimplemented location predictor: {pred_loc_arch}")
+                    raise NotImplementedError(
+                        f"Unimplemented location predictor: {pred_loc_arch}"
+                    )
 
                 # from model.common import ImprovedLocationPredictor
 
