@@ -90,11 +90,25 @@ def get_args():
     )
 
     parser.add_argument(
+        "--temp_gmlp_layers",
+        type=int,
+        default=2,
+    )
+
+
+    parser.add_argument(
         "-p",
         "--pred_loc_arch",
         type=str,
         default="mlp",
         choices=["mlp", "gmlp"],
+    )
+
+    
+    parser.add_argument(
+        "--loc_gmlp_layers",
+        type=int,
+        default=2,
     )
 
     parser.add_argument("--clip_len", type=int, default=100)
@@ -229,6 +243,8 @@ class E2EModel(BaseRGBModel):
             modality,
             predict_location=False,
             pred_loc_arch="mlp",
+            temp_gmlp_layers=2,
+            loc_gmlp_layers=2,
         ):
             super().__init__()
             is_rgb = modality == "rgb"
@@ -338,7 +354,7 @@ class E2EModel(BaseRGBModel):
                                 ),
                             )
                         )
-                        for _ in range(2)
+                        for _ in range(temp_gmlp_layers)
                     ],
                     nn.Linear(hidden_dim, num_classes),
                 )
@@ -435,7 +451,7 @@ class E2EModel(BaseRGBModel):
                                     ),
                                 )
                             )
-                            for _ in range(2)
+                            for _ in range(loc_gmlp_layers)
                         ],
                         nn.Linear(hidden_dim, 2),
                     )
@@ -506,6 +522,8 @@ class E2EModel(BaseRGBModel):
         predict_location=False,
         multi_gpu=False,
         pred_loc_arch="mlp",
+        temp_gmlp_layers=2,
+        loc_gmlp_layers=2,
     ):
         self.device = device
         self._multi_gpu = multi_gpu
@@ -517,6 +535,8 @@ class E2EModel(BaseRGBModel):
             modality,
             predict_location,
             pred_loc_arch=pred_loc_arch,
+            temp_gmlp_layers=temp_gmlp_layers,
+            loc_gmlp_layers=loc_gmlp_layers,
         )
         # self._model = torch.compile(self._model)
         self._model.print_stats()
@@ -1038,6 +1058,8 @@ def main(args):
         multi_gpu=args.gpu_parallel,
         predict_location=args.predict_location,
         pred_loc_arch=args.pred_loc_arch,
+        temp_gmlp_layers=args.temp_gmlp_layers,
+        loc_gmlp_layers=args.loc_gmlp_layers,
     )
 
     if not args.eval_only:
