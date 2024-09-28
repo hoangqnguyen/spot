@@ -342,6 +342,7 @@ class E2EModel(BaseRGBModel):
                 from g_mlp_pytorch.g_mlp_pytorch import Residual, gMLPBlock, PreNorm
                 hidden_dim = feat_dim
                 self._pred_fine = nn.Sequential(
+                    nn.LayerNorm(hidden_dim),
                     *[
                         Residual(
                             PreNorm(
@@ -439,6 +440,7 @@ class E2EModel(BaseRGBModel):
                     from g_mlp_pytorch.g_mlp_pytorch import Residual, gMLPBlock, PreNorm
 
                     self._pred_loc = nn.Sequential(
+                        nn.LayerNorm(hidden_dim),
                         *[
                             Residual(
                                 PreNorm(
