@@ -111,6 +111,18 @@ def get_args():
         default=2,
     )
 
+    parser.add_argument(
+        "--tgmlp_attn_dim",
+        type=int,
+        default=None,
+    )
+
+    parser.add_argument(
+        "--lgmlp_attn_dim",
+        type=int,
+        default=None,
+    )
+
     parser.add_argument("--clip_len", type=int, default=100)
     parser.add_argument("--crop_dim", type=int, default=224)
     parser.add_argument("--batch_size", type=int, default=8)
@@ -245,6 +257,8 @@ class E2EModel(BaseRGBModel):
             pred_loc_arch="mlp",
             temp_gmlp_layers=2,
             loc_gmlp_layers=2,
+            tgmlp_attn_dim=None,
+            lgmlp_attn_dim=None,
         ):
             super().__init__()
             is_rgb = modality == "rgb"
@@ -352,6 +366,7 @@ class E2EModel(BaseRGBModel):
                                     dim_ff=hidden_dim * 2,
                                     seq_len=clip_len,
                                     heads=2,
+                                    attn_dim=tgmlp_attn_dim,
                                 ),
                             )
                         )
@@ -450,6 +465,7 @@ class E2EModel(BaseRGBModel):
                                         dim_ff=hidden_dim * 2,
                                         seq_len=clip_len,
                                         heads=2,
+                                        attn_dim=lgmlp_attn_dim,
                                     ),
                                 )
                             )
@@ -525,7 +541,9 @@ class E2EModel(BaseRGBModel):
         multi_gpu=False,
         pred_loc_arch="mlp",
         temp_gmlp_layers=2,
-        loc_gmlp_layers=2,
+        loc_gmlp_layers=2,        
+        tgmlp_attn_dim=None,
+        lgmlp_attn_dim=None,
     ):
         self.device = device
         self._multi_gpu = multi_gpu
@@ -539,6 +557,8 @@ class E2EModel(BaseRGBModel):
             pred_loc_arch=pred_loc_arch,
             temp_gmlp_layers=temp_gmlp_layers,
             loc_gmlp_layers=loc_gmlp_layers,
+            tgmlp_attn_dim=tgmlp_attn_dim,
+            lgmlp_attn_dim=lgmlp_attn_dim,
         )
         # self._model = torch.compile(self._model)
         self._model.print_stats()
@@ -1062,6 +1082,8 @@ def main(args):
         pred_loc_arch=args.pred_loc_arch,
         temp_gmlp_layers=args.temp_gmlp_layers,
         loc_gmlp_layers=args.loc_gmlp_layers,
+        tgmlp_attn_dim=args.tgmlp_attn_dim,
+        lgmlp_attn_dim=args.lgmlp_attn_dim,
     )
 
     if not args.eval_only:
