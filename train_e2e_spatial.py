@@ -344,6 +344,10 @@ class E2EModel(BaseRGBModel):
                         hidden_dim,
                         num_layers=3 if temporal_arch[0] == "d" else 1,
                     )
+                elif temporal_arch == "mingru":
+                    from model.min_gru import MinRNNPredictor
+                    
+                    self._pred_fine = MinRNNPredictor(input_size=feat_dim, hidden_size=hidden_dim, output_size=num_classes, n_layers=3, rnn_type='mingru', batch_first=True)
                 else:
                     raise NotImplementedError(temporal_arch)
             elif temporal_arch == "mstcn":
