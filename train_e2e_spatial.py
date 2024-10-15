@@ -449,10 +449,10 @@ class E2EModel(BaseRGBModel):
                         MLP(
                             hidden_dim,
                             hidden_dim * 4,
-                            output_dim=hidden_dim,
+                            output_dim=2,
                             num_layers=3,
                         ),
-                        nn.Linear(hidden_dim, 2),
+                        # nn.Linear(hidden_dim, 2),
                     )
 
                 
@@ -460,7 +460,7 @@ class E2EModel(BaseRGBModel):
                     self._pred_loc = nn.Sequential(
                         MLP(
                             hidden_dim,
-                            hidden_dim * 2,
+                            hidden_dim * 3,
                             output_dim=hidden_dim,
                             num_layers=2,
                         ),
