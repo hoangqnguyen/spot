@@ -455,6 +455,18 @@ class E2EModel(BaseRGBModel):
                         nn.Linear(hidden_dim, 2),
                     )
 
+                
+                if pred_loc_arch == "smlp":
+                    self._pred_loc = nn.Sequential(
+                        MLP(
+                            hidden_dim,
+                            hidden_dim * 2,
+                            output_dim=hidden_dim,
+                            num_layers=2,
+                        ),
+                        nn.Linear(hidden_dim, 2),
+                    )
+
                 elif pred_loc_arch == "gmlp":
                     from g_mlp_pytorch.g_mlp_pytorch import Residual, gMLPBlock, PreNorm
 
@@ -758,7 +770,7 @@ def evaluate(
         DataLoader(
             dataset,
             num_workers=BASE_NUM_WORKERS * 2,
-            pin_memory=True,
+            # pin_memory=True,
             batch_size=batch_size,
         )
     ):

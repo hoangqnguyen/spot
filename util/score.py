@@ -250,7 +250,7 @@ def filter_events_by_score(data, fg_threshold):
         filtered_video = {
             "video": video["video"],
             "events": filtered_events,
-            "fps": video["fps"],
+            "fps": video.get("fps", -1),
         }
         filtered_data.append(filtered_video)
     return filtered_data
