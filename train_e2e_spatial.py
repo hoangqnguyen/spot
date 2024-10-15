@@ -101,7 +101,7 @@ def get_args():
         "--pred_loc_arch",
         type=str,
         default="mlp",
-        choices=["mlp", "gmlp"],
+        # choices=["mlp", "gmlp"],
     )
 
     
