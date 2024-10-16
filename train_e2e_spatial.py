@@ -95,7 +95,6 @@ def get_args():
         default=2,
     )
 
-
     parser.add_argument(
         "-p",
         "--pred_loc_arch",
@@ -104,7 +103,6 @@ def get_args():
         # choices=["mlp", "gmlp"],
     )
 
-    
     parser.add_argument(
         "--loc_gmlp_layers",
         type=int,
@@ -261,6 +259,7 @@ class E2EModel(BaseRGBModel):
             lgmlp_attn_dim=None,
         ):
             super().__init__()
+            self._predict_location = predict_location
             is_rgb = modality == "rgb"
             in_channels = {"flow": 2, "bw": 1, "rgb": 3}[modality]
 
@@ -330,175 +329,31 @@ class E2EModel(BaseRGBModel):
             self._features = features
             self._feat_dim = feat_dim
 
-            if "gru" in temporal_arch:
-                hidden_dim = feat_dim
-                if hidden_dim > MAX_GRU_HIDDEN_DIM:
-                    hidden_dim = MAX_GRU_HIDDEN_DIM
-                    print(
-                        "Clamped GRU hidden dim: {} -> {}".format(feat_dim, hidden_dim)
-                    )
-                if temporal_arch in ("gru", "deeper_gru"):
-                    self._pred_fine = GRUPrediction(
-                        feat_dim,
-                        num_classes,
-                        hidden_dim,
-                        num_layers=3 if temporal_arch[0] == "d" else 1,
-                    )
-                elif temporal_arch == "mingru":
-                    from model.min_gru import MinRNNPredictor
-                    
-                    self._pred_fine = MinRNNPredictor(input_size=feat_dim, hidden_size=hidden_dim, output_size=num_classes, n_layers=3, rnn_type='mingru', batch_first=True)
-                else:
-                    raise NotImplementedError(temporal_arch)
-            elif temporal_arch == "mstcn":
-                self._pred_fine = TCNPrediction(feat_dim, num_classes, 3)
-            elif temporal_arch == "asformer":
-                self._pred_fine = ASFormerPrediction(feat_dim, num_classes, 3)
-            elif temporal_arch == "":
-                self._pred_fine = FCPrediction(feat_dim, num_classes)
-            elif temporal_arch == "gmlp":
-                from g_mlp_pytorch.g_mlp_pytorch import Residual, gMLPBlock, PreNorm
-                hidden_dim = feat_dim
-                self._pred_fine = nn.Sequential(
-                    nn.LayerNorm(hidden_dim),
-                    *[
-                        Residual(
-                            PreNorm(
-                                hidden_dim,
-                                gMLPBlock(
-                                    dim=hidden_dim,
-                                    dim_ff=hidden_dim * 2,
-                                    seq_len=clip_len,
-                                    heads=2,
-                                    attn_dim=tgmlp_attn_dim,
-                                ),
-                            )
-                        )
-                        for _ in range(temp_gmlp_layers)
-                    ],
-                    nn.Linear(hidden_dim, num_classes),
-                )
-            elif temporal_arch == "transformer_enc_only_base_11m":
-                from positional_encodings.torch_encodings import (
-                    PositionalEncoding1D,
-                    Summer,
-                )
-                from x_transformers import Encoder
-
-                hidden_dim = 256
-                down_projection = nn.Linear(
-                    feat_dim, hidden_dim
-                )  # feat_dim is too large, needs to down project
-                pos_enc = Summer(
-                    PositionalEncoding1D(hidden_dim)
-                )  # positional encoding for sequence
-                encoder = Encoder(
-                    dim=hidden_dim,
-                    depth=5,
-                    heads=8,
-                    attn_flash=True,
-                    layer_dropout=0.1,  # stochastic depth - dropout entire layer
-                    attn_dropout=0.1,  # dropout post-attention
-                    ff_dropout=0.1,  # feedforward dropout
-                )  # encoder-only transformer
-                fc = MLP(hidden_dim, hidden_dim, num_classes, 3)  # final classifier
-
-                # put everything together
-                self._pred_fine = nn.Sequential(down_projection, pos_enc, encoder, fc)
-
-            elif temporal_arch == "mamba_1":
-                from mamba_ssm import Mamba
-
-                hidden_dim = feat_dim
-                # down_projection = nn.Linear(feat_dim, hidden_dim)
-                mamba = Mamba(
-                    # This module uses roughly 3 * expand * d_model^2 parameters
-                    d_model=hidden_dim,  # Model dimension d_model
-                    d_state=16,  # SSM state expansion factor
-                    d_conv=4,  # Local convolution width
-                    expand=2,  # Block expansion factor
-                ).to("cuda")
-
-                fc = MLP(hidden_dim, hidden_dim, num_classes, 3)
-                self._pred_fine = nn.Sequential(mamba, fc)
-            elif temporal_arch == "bimamba":
-                from mamba_ssm import Mamba
-
-                hidden_dim = feat_dim
-                # down_projection = nn.Linear(feat_dim, hidden_dim)
-                mamba = Mamba(
-                    # This module uses roughly 3 * expand * d_model^2 parameters
-                    d_model=hidden_dim,  # Model dimension d_model
-                    d_state=16,  # SSM state expansion factor
-                    d_conv=4,  # Local convolution width
-                    expand=2,  # Block expansion factor,
-                    bimamba=True,
-                ).to("cuda")
-
-                fc = MLP(hidden_dim, hidden_dim, num_classes, 3)
-                self._pred_fine = nn.Sequential(mamba, fc)
-
-            else:
-                raise NotImplementedError(temporal_arch)
-
-            self._predict_location = predict_location
-            if self._predict_location:
-
-                if pred_loc_arch == "mlp":
-                    self._pred_loc = nn.Sequential(
-                        MLP(
-                            hidden_dim,
-                            hidden_dim * 4,
-                            output_dim=2,
-                            num_layers=3,
+            self._dual_attention_blocks = nn.ModuleDict(
+                {
+                    "channel": nn.TransformerEncoder(
+                        nn.TransformerEncoderLayer(
+                            d_model=clip_len,
+                            nhead=4,
+                            batch_first=True,
+                            dim_feedforward=clip_len * 4,
                         ),
-                        # nn.Linear(hidden_dim, 2),
-                    )
-
-                
-                if pred_loc_arch == "smlp":
-                    self._pred_loc = nn.Sequential(
-                        MLP(
-                            hidden_dim,
-                            hidden_dim * 3,
-                            output_dim=hidden_dim,
-                            num_layers=2,
+                        num_layers=2,
+                    ),
+                    "temporal": nn.TransformerEncoder(
+                        nn.TransformerEncoderLayer(
+                            d_model=feat_dim,
+                            nhead=4,
+                            batch_first=True,
+                            dim_feedforward=512,
                         ),
-                        nn.Linear(hidden_dim, 2),
-                    )
+                        num_layers=2,
+                    ),
+                }
+            )
 
-                elif pred_loc_arch == "gmlp":
-                    from g_mlp_pytorch.g_mlp_pytorch import Residual, gMLPBlock, PreNorm
-
-                    self._pred_loc = nn.Sequential(
-                        nn.LayerNorm(hidden_dim),
-                        *[
-                            Residual(
-                                PreNorm(
-                                    hidden_dim,
-                                    gMLPBlock(
-                                        dim=hidden_dim,
-                                        dim_ff=hidden_dim * 2,
-                                        seq_len=clip_len,
-                                        heads=2,
-                                        attn_dim=lgmlp_attn_dim,
-                                    ),
-                                )
-                            )
-                            for _ in range(loc_gmlp_layers)
-                        ],
-                        nn.Linear(hidden_dim, 2),
-                    )
-                else:
-                    raise NotImplementedError(
-                        f"Unimplemented location predictor: {pred_loc_arch}"
-                    )
-
-                # from model.common import ImprovedLocationPredictor
-
-                # self._pred_loc = ImprovedLocationPredictor(
-                #     input_dim=hidden_dim, hidden_dim=256, output_dim=2
-                # )
+            self._pred_fine = nn.Linear(feat_dim, num_classes)
+            self._pred_loc = nn.Linear(feat_dim, 2)
 
         def forward(self, x):
             batch_size, true_clip_len, channels, height, width = x.shape
@@ -522,14 +377,19 @@ class E2EModel(BaseRGBModel):
                 # Undo padding
                 im_feat = im_feat[:, :true_clip_len, :]
 
-            loc_feat = None
-            if self._predict_location:
-                loc_feat = self._pred_loc(im_feat)
+            hidden_state = self._dual_attention_blocks["channel"](
+                im_feat.permute(0, 2, 1)
+            )
+            hidden_state = self._dual_attention_blocks["temporal"](
+                hidden_state.permute(0, 2, 1)
+            )
 
             return {
-                "im_feat": self._pred_fine(im_feat),
-                "loc_feat": loc_feat,
-                "cnn_feat": im_feat,
+                "im_feat": self._pred_fine(hidden_state),
+                "loc_feat": (
+                    self._pred_loc(hidden_state) if self._predict_location else None
+                ),
+                "cnn_feat": hidden_state,
             }
 
         def print_stats(self):
@@ -557,7 +417,7 @@ class E2EModel(BaseRGBModel):
         multi_gpu=False,
         pred_loc_arch="mlp",
         temp_gmlp_layers=2,
-        loc_gmlp_layers=2,        
+        loc_gmlp_layers=2,
         tgmlp_attn_dim=None,
         lgmlp_attn_dim=None,
     ):
@@ -1113,7 +973,7 @@ def main(args):
             train_data,
             shuffle=False,
             batch_size=loader_batch_size,
-            pin_memory=True,
+            # pin_memory=True,
             num_workers=get_num_train_workers(args),
             prefetch_factor=1,
             worker_init_fn=worker_init_fn,
@@ -1122,7 +982,7 @@ def main(args):
             val_data,
             shuffle=False,
             batch_size=loader_batch_size,
-            pin_memory=True,
+            # pin_memory=True,
             num_workers=BASE_NUM_WORKERS,
             worker_init_fn=worker_init_fn,
         )
