@@ -329,25 +329,25 @@ class E2EModel(BaseRGBModel):
             self._features = features
             self._feat_dim = feat_dim
 
-            self._dual_attention_blocks = nn.ModuleDict(
+            self.attention_blocks = nn.ModuleDict(
                 {
                     "channel": nn.TransformerEncoder(
                         nn.TransformerEncoderLayer(
                             d_model=clip_len,
-                            nhead=4,
+                            nhead=2,
                             batch_first=True,
-                            dim_feedforward=clip_len * 4,
+                            dim_feedforward=128,
                         ),
-                        num_layers=2,
+                        num_layers=1,
                     ),
                     "temporal": nn.TransformerEncoder(
                         nn.TransformerEncoderLayer(
                             d_model=feat_dim,
-                            nhead=4,
+                            nhead=2,
                             batch_first=True,
                             dim_feedforward=512,
                         ),
-                        num_layers=2,
+                        num_layers=1,
                     ),
                 }
             )
@@ -390,19 +390,20 @@ class E2EModel(BaseRGBModel):
                 # Undo padding
                 im_feat = im_feat[:, :true_clip_len, :]
 
-            hidden_state = self._dual_attention_blocks["channel"](
+            h_loc = self.attention_blocks["channel"](
                 im_feat.permute(0, 2, 1)
-            )
-            hidden_state = self._dual_attention_blocks["temporal"](
-                hidden_state.permute(0, 2, 1)
+            ).permute(0, 2, 1)
+
+            h_cls = self.attention_blocks["temporal"](
+                im_feat
             )
 
             return {
-                "im_feat": self._pred_fine(hidden_state),
+                "im_feat": self._pred_fine(h_cls),
                 "loc_feat": (
-                    self._pred_loc(hidden_state) if self._predict_location else None
+                    self._pred_loc(h_loc) if self._predict_location else None
                 ),
-                "cnn_feat": hidden_state,
+                # "cnn_feat": hidden_state,
             }
 
         def print_stats(self):
@@ -508,7 +509,7 @@ class E2EModel(BaseRGBModel):
                 ):
                     preds = self._model(frame)
 
-                    cnn_feat = preds["cnn_feat"]
+                    # cnn_feat = preds["cnn_feat"]
                     pred = preds["im_feat"]
                     loc = preds["loc_feat"]
 
