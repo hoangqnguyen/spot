@@ -329,7 +329,7 @@ class E2EModel(BaseRGBModel):
             self._features = features
             self._feat_dim = feat_dim
 
-            self.attention_blocks = nn.ModuleDict(
+            self._dual_attention_blocks = nn.ModuleDict(
                 {
                     "channel": nn.TransformerEncoder(
                         nn.TransformerEncoderLayer(
@@ -390,20 +390,20 @@ class E2EModel(BaseRGBModel):
                 # Undo padding
                 im_feat = im_feat[:, :true_clip_len, :]
 
-            h_loc = self.attention_blocks["channel"](
+            h1 = self._dual_attention_blocks["channel"](
                 im_feat.permute(0, 2, 1)
             ).permute(0, 2, 1)
 
-            h_cls = self.attention_blocks["temporal"](
-                im_feat
-            )
+            h2 = self._dual_attention_blocks["temporal"](im_feat) 
+
+            im_feat = im_feat + h1 + h2
 
             return {
-                "im_feat": self._pred_fine(h_cls),
+                "im_feat": self._pred_fine(im_feat),
                 "loc_feat": (
-                    self._pred_loc(h_loc) if self._predict_location else None
+                    self._pred_loc(im_feat) if self._predict_location else None
                 ),
-                # "cnn_feat": hidden_state,
+                # "cnn_feat": im_feat,
             }
 
         def print_stats(self):
