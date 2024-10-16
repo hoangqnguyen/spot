@@ -357,15 +357,15 @@ class E2EModel(BaseRGBModel):
 
             self._pred_fine = MLP(
                 feat_dim,
-                feat_dim * 2,
+                feat_dim,
                 output_dim=num_classes,
-                num_layers=4,
+                num_layers=3,
             )
             self._pred_loc = MLP(
                 feat_dim,
-                feat_dim * 2,
+                feat_dim,
                 output_dim=2,
-                num_layers=4,
+                num_layers=3,
             )
 
         def forward(self, x):
