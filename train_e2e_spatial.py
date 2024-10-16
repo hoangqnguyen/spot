@@ -352,8 +352,21 @@ class E2EModel(BaseRGBModel):
                 }
             )
 
-            self._pred_fine = nn.Linear(feat_dim, num_classes)
-            self._pred_loc = nn.Linear(feat_dim, 2)
+            # self._pred_fine = nn.Linear(feat_dim, num_classes)
+            # self._pred_loc = nn.Linear(feat_dim, 2)
+
+            self._pred_fine = MLP(
+                feat_dim,
+                feat_dim * 2,
+                output_dim=num_classes,
+                num_layers=4,
+            )
+            self._pred_loc = MLP(
+                feat_dim,
+                feat_dim * 2,
+                output_dim=2,
+                num_layers=4,
+            )
 
         def forward(self, x):
             batch_size, true_clip_len, channels, height, width = x.shape
