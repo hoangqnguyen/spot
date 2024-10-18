@@ -124,6 +124,7 @@ class SpatialTemporalEncoder(nn.Module):
         Returns:
             torch.Tensor: Output tensor of shape [B, T, F]
         """
+        x = self.ft_projection(x)
         for layer in self.layers:
             x = layer(x)
         return x

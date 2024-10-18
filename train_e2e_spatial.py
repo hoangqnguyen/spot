@@ -263,6 +263,7 @@ class E2EModel(BaseRGBModel):
             num_heads=8,
             dropout=0.1,
             prenorm=True,
+            hidden_dim=256,
         ):
             super().__init__()
             self._predict_location = predict_location
@@ -334,11 +335,12 @@ class E2EModel(BaseRGBModel):
 
             self._features = features
             self._feat_dim = feat_dim
-
+            self._hidden_dim = hidden_dim
             
             # Initialize Spatial-Temporal Encoder
             self._encoder = SpatialTemporalEncoder(
                 feat_dim=self._feat_dim,
+                hidden_dim=self._hidden_dim,
                 num_layers=num_spatial_temporal_layers,
                 reduction=reduction,
                 num_heads=num_heads,
@@ -347,9 +349,9 @@ class E2EModel(BaseRGBModel):
             )
 
             # Prediction heads
-            self._pred_fine = nn.Linear(self._feat_dim, num_classes)
+            self._pred_fine = nn.Linear(self._hidden_dim, num_classes)
             if self._predict_location:
-                self._pred_loc = nn.Linear(self._feat_dim, 2)
+                self._pred_loc = nn.Linear(self._hidden_dim, 2)
             else:
                 self._pred_loc = None
 
