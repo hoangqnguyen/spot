@@ -19,7 +19,7 @@ import timm
 from tqdm import tqdm
 
 from model.common import step, BaseRGBModel, MLP
-from model.spatial_temporal_encoder import SpatialTemporalEncoder
+from model.channel_temporal_encoder import ChannelTemporalEncoder
 from model.shift import make_temporal_shift
 from model.modules import *
 from dataset.frame import ActionSpotDataset, ActionSpotVideoDataset
@@ -339,7 +339,7 @@ class E2EModel(BaseRGBModel):
             self._hidden_dim = hidden_dim
             
             # Initialize Spatial-Temporal Encoder
-            self._encoder = SpatialTemporalEncoder(
+            self._encoder = ChannelTemporalEncoder(
                 feat_dim=self._feat_dim,
                 hidden_dim=self._hidden_dim,
                 num_layers=num_spatial_temporal_layers,
@@ -350,7 +350,7 @@ class E2EModel(BaseRGBModel):
             )
 
             # Prediction heads
-            self._pred_fine = nn.Linear(self._hidden_dim, num_classes)
+            self._pred_cls = nn.Linear(self._hidden_dim, num_classes)
             if self._predict_location:
                 self._pred_loc = nn.Linear(self._hidden_dim, 2)
             else:
@@ -391,12 +391,12 @@ class E2EModel(BaseRGBModel):
             feat = self._encoder(feat)  # [B, T, F]
 
             # Predictions
-            class_scores = self._pred_fine(feat)  # [B, T, num_classes]
+            class_scores = self._pred_cls(feat)  # [B, T, num_classes]
             loc_predictions = self._pred_loc(feat) if self._pred_loc else None  # [B, T, 2]
 
             return {
-                "im_feat": class_scores,
-                "loc_feat": loc_predictions,
+                "cls_logits": class_scores,
+                "loc_logits": loc_predictions,
             }
 
         def print_stats(self):
@@ -406,7 +406,7 @@ class E2EModel(BaseRGBModel):
                 f"CNN features:{sum(p.numel() for p in self._features.parameters()):,}"
             )
             print(
-                f"Temporal Head:{sum(p.numel() for p in self._pred_fine.parameters()):,}"
+                f"Temporal Head:{sum(p.numel() for p in self._pred_cls.parameters()):,}"
             )
             if hasattr(self, "_pred_loc"):
                 print(
@@ -470,7 +470,7 @@ class E2EModel(BaseRGBModel):
         epoch_loss = 0.0
         epoch_loss_cls = 0.0
         epoch_loss_loc = 0.0
-        epoch_loss_contrast = 0.0
+        # epoch_loss_contrast = 0.0
 
         with torch.no_grad() if optimizer is None else nullcontext():
             pbar = tqdm(loader)
@@ -497,15 +497,15 @@ class E2EModel(BaseRGBModel):
                     preds = self._model(frame)
 
                     # cnn_feat = preds["cnn_feat"]
-                    pred = preds["im_feat"]
-                    loc = preds["loc_feat"]
+                    pred = preds["cls_logits"]
+                    loc = preds["loc_logits"]
 
                     loss = 0.0
                     loss_cls = 0.0
                     loss_loc = 0.0
 
                     # loss_contrast = calculate_loss_contrast(cnn_feat.flatten(0,1), label)
-                    loss_contrast = torch.tensor(0.0).to(self.device)
+                    # loss_contrast = torch.tensor(0.0).to(self.device)
 
                     if len(pred.shape) == 3:
                         pred = pred.unsqueeze(0)
@@ -538,7 +538,8 @@ class E2EModel(BaseRGBModel):
                         if torch.isnan(loss_loc):
                             breakpoint()
 
-                    loss = loss_cls + loss_loc + loss_contrast * 0.1
+                    # loss = loss_cls + loss_loc + loss_contrast * 0.1
+                    loss = loss_cls + loss_loc 
 
                 if optimizer is not None:
                     step(
@@ -551,7 +552,7 @@ class E2EModel(BaseRGBModel):
 
                 epoch_loss += loss.detach().item()
                 epoch_loss_cls += loss_cls.detach().item()
-                epoch_loss_contrast += loss_contrast.detach().item()
+                # epoch_loss_contrast += loss_contrast.detach().item()
 
                 if self._model._predict_location:
                     epoch_loss_loc += loss_loc.detach().item()
@@ -561,7 +562,7 @@ class E2EModel(BaseRGBModel):
                         "sum": loss.detach().item(),
                         "cls": loss_cls.detach().item(),
                         "loc": loss_loc.detach().item(),
-                        "contrast": loss_contrast.detach().item(),
+                        # "contrast": loss_contrast.detach().item(),
                     }
                 )
 
@@ -569,7 +570,7 @@ class E2EModel(BaseRGBModel):
             "sum": epoch_loss / len(loader),
             "cls": epoch_loss_cls / len(loader),
             "loc": epoch_loss_loc / len(loader),
-            "contrast": epoch_loss_contrast / len(loader),
+            # "contrast": epoch_loss_contrast / len(loader),
         }
 
     def predict(self, seq, use_amp=False, presence_threshold=0.0):
@@ -584,11 +585,11 @@ class E2EModel(BaseRGBModel):
         with torch.no_grad():
             with torch.cuda.amp.autocast() if use_amp else nullcontext():
                 pred_dict = self._model(seq)
-            pred_cls_score = torch.softmax(pred_dict["im_feat"], axis=2).cpu().numpy()
-            pred_cls = torch.argmax(pred_dict["im_feat"], axis=2).cpu().numpy()
+            pred_cls_score = torch.softmax(pred_dict["cls_logits"], axis=2).cpu().numpy()
+            pred_cls = torch.argmax(pred_dict["cls_logits"], axis=2).cpu().numpy()
             if self._model._predict_location:
                 pred_loc = (
-                    pred_dict["loc_feat"]
+                    pred_dict["loc_logits"]
                     .reshape(seq.shape[0], -1, 2)
                     .sigmoid()
                     .cpu()
@@ -1025,18 +1026,19 @@ def main(args):
                             "Train loss",
                             train_loss_dict["cls"],
                             train_loss_dict["loc"],
-                            train_loss_dict["contrast"],
+                            # train_loss_dict["contrast"],
                             train_loss_dict["sum"],
                         ],
                         [
                             "Val loss",
                             val_loss_dict["cls"],
                             val_loss_dict["loc"],
-                            val_loss_dict["contrast"],
+                            # val_loss_dict["contrast"],
                             val_loss_dict["sum"],
                         ],
                     ],
-                    headers=[f"Epoch: {epoch}", "cls", "loc", "contrast", "sum"],
+                    # headers=[f"Epoch: {epoch}", "cls", "loc", "contrast", "sum"],
+                    headers=[f"Epoch: {epoch}", "cls", "loc", "sum"],
                     floatfmt=".5f",
                 ),
             )
