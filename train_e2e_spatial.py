@@ -97,6 +97,12 @@ def get_args():
     )
 
     parser.add_argument(
+        "--hidden_dim",
+        type=int,
+        default=256,
+    )
+
+    parser.add_argument(
         "-p",
         "--pred_loc_arch",
         type=str,
@@ -253,12 +259,7 @@ class E2EModel(BaseRGBModel):
             clip_len,
             modality,
             predict_location=False,
-            pred_loc_arch="mlp",
-            temp_gmlp_layers=2,
-            loc_gmlp_layers=2,
-            tgmlp_attn_dim=None,
-            lgmlp_attn_dim=None,
-            num_spatial_temporal_layers=4,  # Number of SpatialTemporalAttnBlocks
+            num_spatial_temporal_layers=3,  # Number of SpatialTemporalAttnBlocks
             reduction=8,
             num_heads=8,
             dropout=0.1,
@@ -423,10 +424,7 @@ class E2EModel(BaseRGBModel):
         predict_location=False,
         multi_gpu=False,
         pred_loc_arch="mlp",
-        temp_gmlp_layers=2,
-        loc_gmlp_layers=2,
-        tgmlp_attn_dim=None,
-        lgmlp_attn_dim=None,
+        hidden_dim=256,
     ):
         self.device = device
         self._multi_gpu = multi_gpu
@@ -437,11 +435,7 @@ class E2EModel(BaseRGBModel):
             clip_len,
             modality,
             predict_location,
-            pred_loc_arch=pred_loc_arch,
-            temp_gmlp_layers=temp_gmlp_layers,
-            loc_gmlp_layers=loc_gmlp_layers,
-            tgmlp_attn_dim=tgmlp_attn_dim,
-            lgmlp_attn_dim=lgmlp_attn_dim,
+            hidden_dim=hidden_dim,
         )
         # self._model = torch.compile(self._model)
         self._model.print_stats()
@@ -962,11 +956,7 @@ def main(args):
         modality=args.modality,
         multi_gpu=args.gpu_parallel,
         predict_location=args.predict_location,
-        pred_loc_arch=args.pred_loc_arch,
-        temp_gmlp_layers=args.temp_gmlp_layers,
-        loc_gmlp_layers=args.loc_gmlp_layers,
-        tgmlp_attn_dim=args.tgmlp_attn_dim,
-        lgmlp_attn_dim=args.lgmlp_attn_dim,
+        hidden_dim=args.hidden_dim
     )
 
     if not args.eval_only:
