@@ -40,9 +40,11 @@ class SpatialAttention(nn.Module):
         return x
 
 
+
 class SpatialTemporalAttnBlock(nn.Module):
     """
-    Spatial-Temporal Attention Block integrating Spatial and Temporal Attention.
+    Spatial-Temporal Attention Block integrating Spatial and Temporal Attention using
+    torch.nn.functional.scaled_dot_product_attention with multi-head support.
     
     Args:
         feat_dim (int): Dimension of the input features.
@@ -53,15 +55,19 @@ class SpatialTemporalAttnBlock(nn.Module):
     """
     def __init__(self, feat_dim, reduction=8, num_heads=8, dropout=0.1, prenorm=True):
         super(SpatialTemporalAttnBlock, self).__init__()
+        self.num_heads = num_heads
+        self.head_dim = feat_dim // num_heads
+        assert self.head_dim * num_heads == feat_dim, "feat_dim must be divisible by num_heads"
+
         self.prenorm = prenorm
         
         # Spatial Attention
-        self.norm = nn.LayerNorm(feat_dim) if prenorm else nn.Identity()
+        self.norm1 = nn.LayerNorm(feat_dim) if prenorm else nn.Identity()
         self.spatial_attn = SpatialAttention(feat_dim, reduction)
         self.spatial_dropout = nn.Dropout(dropout)
         
         # Temporal Attention
-        self.temporal_attn = nn.MultiheadAttention(embed_dim=feat_dim, num_heads=num_heads, dropout=dropout, batch_first=True)
+        self.norm2 = nn.LayerNorm(feat_dim) if prenorm else nn.Identity()
         self.temporal_dropout = nn.Dropout(dropout)
         
     def forward(self, x):
@@ -74,20 +80,38 @@ class SpatialTemporalAttnBlock(nn.Module):
         Returns:
             torch.Tensor: Output tensor of shape [B, T, F]
         """
+        B, T, F = x.shape
+        
         # ----- Spatial Attention -----
         residual = x
-        x_norm = self.norm(x)  # [B, T, F]
-        x_spatial = self.spatial_attn(x_norm)  # [B, T, F]
+        x_spatial = self.norm1(x)  # [B, T, F]
+        x_spatial = self.spatial_attn(x_spatial)  # [B, T, F]
         x_spatial = self.spatial_dropout(x_spatial)
-        x = residual + x_spatial  # Residual connection
         
-        # ----- Temporal Attention -----
-        residual = x
-        attn_output, _ = self.temporal_attn(x_norm, x_norm, x_norm)  # [B, T, F]
+        # ----- Temporal Attention using scaled_dot_product_attention with multi-head support -----
+        x_temporal = self.norm2(x)  # [B, T, F]
+        
+        # Split into multiple heads for multi-head attention: [B, T, num_heads, head_dim]
+        x_temporal = x_temporal.view(B, T, self.num_heads, self.head_dim)
+        
+        # Permute to [num_heads, T, B, head_dim] for compatibility with scaled_dot_product_attention
+        x_temporal = x_temporal.permute(2, 1, 0, 3).contiguous().view(self.num_heads, T, B, self.head_dim)
+        
+        # Apply scaled dot product attention per head
+        q = k = v = x_temporal
+        attn_output = nn.functional.scaled_dot_product_attention(q, k, v)  # [num_heads, T, B, head_dim]
+        
+        # Reshape back: [B, T, F]
+        attn_output = attn_output.view(self.num_heads, T, B, self.head_dim).permute(2, 1, 0, 3).contiguous()
+        attn_output = attn_output.view(B, T, F)  # Combine heads back
+        
         attn_output = self.temporal_dropout(attn_output)
-        x = residual + attn_output  # Residual connection
+        
+        # Combine spatial and temporal attention with residual connection
+        x = residual + x_spatial + attn_output
         
         return x
+
 
 class SpatialTemporalEncoder(nn.Module):
     """
@@ -101,7 +125,7 @@ class SpatialTemporalEncoder(nn.Module):
         dropout (float): Dropout rate.
         prenorm (bool): If True, applies LayerNorm before each attention sub-layer.
     """
-    def __init__(self, feat_dim, hidden_dim=256, num_layers=4, reduction=8, num_heads=8, dropout=0.1, prenorm=True):
+    def __init__(self, feat_dim, hidden_dim, num_layers=4, reduction=8, num_heads=8, dropout=0.1, prenorm=True):
         super(SpatialTemporalEncoder, self).__init__()
         self.ft_projection = nn.Linear(feat_dim, hidden_dim)
         self.layers = nn.ModuleList([
