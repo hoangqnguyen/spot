@@ -19,6 +19,7 @@ import timm
 from tqdm import tqdm
 
 from model.common import step, BaseRGBModel, MLP
+from model.spatial_temporal_encoder import SpatialTemporalEncoder
 from model.shift import make_temporal_shift
 from model.modules import *
 from dataset.frame import ActionSpotDataset, ActionSpotVideoDataset
@@ -257,6 +258,11 @@ class E2EModel(BaseRGBModel):
             loc_gmlp_layers=2,
             tgmlp_attn_dim=None,
             lgmlp_attn_dim=None,
+            num_spatial_temporal_layers=4,  # Number of SpatialTemporalAttnBlocks
+            reduction=8,
+            num_heads=8,
+            dropout=0.1,
+            prenorm=True,
         ):
             super().__init__()
             self._predict_location = predict_location
@@ -329,72 +335,70 @@ class E2EModel(BaseRGBModel):
             self._features = features
             self._feat_dim = feat_dim
 
-            # Define dual attention blocks
-            self._dual_attention_blocks = nn.ModuleDict(
-                {
-                    "channel": nn.Sequential(
-                        nn.AdaptiveAvgPool1d(1),
-                        nn.Flatten(),
-                        nn.Linear(self._feat_dim, self._feat_dim // 8),
-                        nn.ReLU(),
-                        nn.Linear(self._feat_dim // 8, self._feat_dim),
-                        nn.Sigmoid(),
-                    ),
-                    "temporal": nn.MultiheadAttention(
-                        embed_dim=self._feat_dim, num_heads=8
-                    ),
-                }
+            
+            # Initialize Spatial-Temporal Encoder
+            self._encoder = SpatialTemporalEncoder(
+                feat_dim=self._feat_dim,
+                num_layers=num_spatial_temporal_layers,
+                reduction=reduction,
+                num_heads=num_heads,
+                dropout=dropout,
+                prenorm=prenorm
             )
 
             # Prediction heads
             self._pred_fine = nn.Linear(self._feat_dim, num_classes)
-            self._predict_location = predict_location
             if self._predict_location:
                 self._pred_loc = nn.Linear(self._feat_dim, 2)
             else:
                 self._pred_loc = None
 
         def forward(self, x):
+            """
+            Forward pass of the E2EModel.
+            
+            Args:
+                x (torch.Tensor): Input tensor of shape [B, T, C, H, W]
+            
+            Returns:
+                dict: Dictionary containing class scores and location predictions.
+            """
+            B, T, C, H, W = x.shape
 
-            batch_size, true_clip_len, channels, height, width = x.shape
-            # Feature extraction
-            im_feat = self._features(x.view(-1, channels, height, width))
-            im_feat = im_feat.view(batch_size, true_clip_len, -1)  # Shape: [B, T, F]
+            # Handle clip length requirements
+            clip_len = T
+            if self._require_clip_len > 0:
+                assert (
+                    T <= self._require_clip_len
+                ), f"Expected clip length <= {self._require_clip_len}, got {T}"
+                if T < self._require_clip_len:
+                    padding = self._require_clip_len - T
+                    x = F.pad(x, (0, 0, 0, 0, 0, padding))  # Pad temporal dimension
+                    clip_len = self._require_clip_len
 
-            # Channel Attention
-            im_feat_permuted = im_feat.permute(0, 2, 1)  # Shape: [B, F, T]
-            channel_attn = self._dual_attention_blocks["channel"](im_feat_permuted)
-            channel_attn = channel_attn.unsqueeze(2)  # Shape: [B, F, 1]
-            im_feat_channel_attn = im_feat_permuted * channel_attn  # Apply attention
-            im_feat_channel_attn = im_feat_channel_attn.permute(
-                0, 2, 1
-            )  # Shape: [B, T, F]
+            # Feature Extraction
+            x = x.view(-1, C, H, W)  # Merge batch and temporal dimensions
+            feat = self._features(x)  # [B*T, F, H', W']
+            feat = feat.view(B, clip_len, self._feat_dim)  # [B, T, F]
 
-            # Temporal Attention
-            im_feat_temporal = im_feat_channel_attn.transpose(0, 1)  # Shape: [T, B, F]
-            temporal_attn_output, _ = self._dual_attention_blocks["temporal"](
-                im_feat_temporal, im_feat_temporal, im_feat_temporal
-            )
-            im_feat_attended = temporal_attn_output.transpose(0, 1)  # Shape: [B, T, F]
+            if T != clip_len:
+                feat = feat[:, :T, :]  # Undo padding if applied
 
-            # Combine features
-            im_feat_combined = im_feat + im_feat_attended
+            # Spatial-Temporal Encoding
+            feat = self._encoder(feat)  # [B, T, F]
 
             # Predictions
-            pred_scores = self._pred_fine(
-                im_feat_combined
-            )  # Shape: [B, T, num_classes]
-            pred_locations = None
-            if self._predict_location:
-                pred_locations = self._pred_loc(im_feat_combined)  # Shape: [B, T, 2]
+            class_scores = self._pred_fine(feat)  # [B, T, num_classes]
+            loc_predictions = self._pred_loc(feat) if self._pred_loc else None  # [B, T, 2]
 
             return {
-                "im_feat": pred_scores,
-                "loc_feat": pred_locations,
+                "im_feat": class_scores,
+                "loc_feat": loc_predictions,
             }
 
         def print_stats(self):
             print(f"Model params:{sum(p.numel() for p in self.parameters()):,}")
+            print(f"Encoder:{sum(p.numel() for p in self._encoder.parameters()):,}")
             print(
                 f"CNN features:{sum(p.numel() for p in self._features.parameters()):,}"
             )
