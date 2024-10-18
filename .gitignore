@@ -19,3 +19,4 @@ demo_create.py
 .idea/vcs.xml
 .idea/inspectionProfiles/profiles_settings.xml
 .idea/.gitignore
+pretrained
