@@ -40,31 +40,6 @@ class ChannelAttention(nn.Module):
         return x
 
 
-class ChannelAttention(nn.Module):
-    """
-    Placeholder for the ChannelAttention module.
-    Replace this with your actual ChannelAttention implementation.
-    """
-    def __init__(self, feat_dim, reduction=8):
-        super(ChannelAttention, self).__init__()
-        self.avg_pool = nn.AdaptiveAvgPool1d(1)
-        self.fc = nn.Sequential(
-            nn.Linear(feat_dim, feat_dim // reduction, bias=False),
-            nn.ReLU(inplace=True),
-            nn.Linear(feat_dim // reduction, feat_dim, bias=False),
-            nn.Sigmoid()
-        )
-
-    def forward(self, x):
-        # x: [B, T, F]
-        B, T, F = x.size()
-        # Aggregate over temporal dimension
-        y = self.avg_pool(x.permute(0, 2, 1))  # [B, F, 1]
-        y = y.view(B, F)  # [B, F]
-        y = self.fc(y)    # [B, F]
-        y = y.view(B, 1, F)  # [B, 1, F]
-        return x * y.expand(-1, T, -1)  # [B, T, F]
-
 class ChannelTemporalAttnBlock(nn.Module):
     """
     Channel-Temporal Attention Block integrating Channel and Temporal Attention using
