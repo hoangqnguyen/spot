@@ -56,12 +56,11 @@ class SpatialTemporalAttnBlock(nn.Module):
         self.prenorm = prenorm
         
         # Spatial Attention
-        self.spatial_norm = nn.LayerNorm(feat_dim) if prenorm else nn.Identity()
+        self.norm = nn.LayerNorm(feat_dim) if prenorm else nn.Identity()
         self.spatial_attn = SpatialAttention(feat_dim, reduction)
         self.spatial_dropout = nn.Dropout(dropout)
         
         # Temporal Attention
-        self.temporal_norm = nn.LayerNorm(feat_dim) if prenorm else nn.Identity()
         self.temporal_attn = nn.MultiheadAttention(embed_dim=feat_dim, num_heads=num_heads, dropout=dropout, batch_first=True)
         self.temporal_dropout = nn.Dropout(dropout)
         
@@ -77,14 +76,13 @@ class SpatialTemporalAttnBlock(nn.Module):
         """
         # ----- Spatial Attention -----
         residual = x
-        x_norm = self.spatial_norm(x)  # [B, T, F]
+        x_norm = self.norm(x)  # [B, T, F]
         x_spatial = self.spatial_attn(x_norm)  # [B, T, F]
         x_spatial = self.spatial_dropout(x_spatial)
         x = residual + x_spatial  # Residual connection
         
         # ----- Temporal Attention -----
         residual = x
-        x_norm = self.temporal_norm(x)  # [B, T, F]
         attn_output, _ = self.temporal_attn(x_norm, x_norm, x_norm)  # [B, T, F]
         attn_output = self.temporal_dropout(attn_output)
         x = residual + attn_output  # Residual connection
@@ -103,11 +101,12 @@ class SpatialTemporalEncoder(nn.Module):
         dropout (float): Dropout rate.
         prenorm (bool): If True, applies LayerNorm before each attention sub-layer.
     """
-    def __init__(self, feat_dim, num_layers=4, reduction=8, num_heads=8, dropout=0.1, prenorm=True):
+    def __init__(self, feat_dim, hidden_dim=256, num_layers=4, reduction=8, num_heads=8, dropout=0.1, prenorm=True):
         super(SpatialTemporalEncoder, self).__init__()
+        self.ft_projection = nn.Linear(feat_dim, hidden_dim)
         self.layers = nn.ModuleList([
             SpatialTemporalAttnBlock(
-                feat_dim=feat_dim,
+                feat_dim=hidden_dim,
                 reduction=reduction,
                 num_heads=num_heads,
                 dropout=dropout,
