@@ -19,8 +19,9 @@ import timm
 from tqdm import tqdm
 
 from model.common import step, BaseRGBModel, MLP
+
 # from model.channel_temporal_encoder import ChannelTemporalEncoder
-from mamba_ssm import Mamba
+# from mamba_ssm import Mamba
 from model.shift import make_temporal_shift
 from model.modules import *
 from dataset.frame import ActionSpotDataset, ActionSpotVideoDataset
@@ -62,8 +63,7 @@ def get_args():
         required=True,
         choices=[
             # From torchvision
-            "vim"
-            "rn18",
+            "vim" "rn18",
             "rn18_tsm",
             "rn18_gsm",
             "rn50",
@@ -304,7 +304,7 @@ class E2EModel(BaseRGBModel):
                 )
                 # feat_dim = features.head.fc.in_features
                 # features.head.fc = nn.Identity()
-                
+
                 feat_dim = features.feature_info.channels()[-1]
 
                 if not is_rgb:
@@ -342,36 +342,17 @@ class E2EModel(BaseRGBModel):
             self._features = features
             self._feat_dim = feat_dim
             self._hidden_dim = hidden_dim
-            
+
             # Initialize Spatial-Temporal Encoder
-            # self._encoder = ChannelTemporalEncoder(
-            #     feat_dim=self._feat_dim,
-            #     hidden_dim=self._hidden_dim,
-            #     num_layers=num_spatial_temporal_layers,
-            #     reduction=reduction,
-            #     num_heads=num_heads,
-            #     dropout=dropout,
-            #     prenorm=prenorm
-            # )
 
-            self.frame_token = nn.Parameter(torch.randn(1, 1, self._hidden_dim))
+            from model.mamba import STMambaEncoder
 
-            self._encoder = nn.ModuleDict({
-                "in_proj": nn.Linear(self._feat_dim, self._hidden_dim),
-                "mamba_s": Mamba(                    
-                    d_model=self._hidden_dim, # Model dimension d_model
-                    d_state=16,  # SSM state expansion factor
-                    d_conv=4,    # Local convolution width
-                    expand=2,    # Block expansion factor
-                ),
-                
-                "mamba_t": Mamba(                    
-                    d_model=self._hidden_dim, # Model dimension d_model
-                    d_state=16,  # SSM state expansion factor
-                    d_conv=4,    # Local convolution width
-                    expand=2,    # Block expansion factor
-                )
-            })
+            self._encoder = STMambaEncoder(
+                in_dim=self._feat_dim,
+                n_embd=self._hidden_dim,
+                n_layers_spatial=3,
+                n_layers_temporal=3,
+            )
 
             # Prediction heads
             self._pred_cls = nn.Linear(self._hidden_dim, num_classes)
@@ -383,10 +364,10 @@ class E2EModel(BaseRGBModel):
         def forward(self, x):
             """
             Forward pass of the E2EModel.
-            
+
             Args:
                 x (torch.Tensor): Input tensor of shape [B, T, C, H, W]
-            
+
             Returns:
                 dict: Dictionary containing class scores and location predictions.
             """
@@ -406,26 +387,14 @@ class E2EModel(BaseRGBModel):
             # Feature Extraction
             x = x.view(-1, C, H, W)  # Merge batch and temporal dimensions
             feat = self._features(x)[-1]  # [B*T, F, H', W']
-            
-            # feat = feat.view(B, clip_len, self._feat_dim)  # [B, T, F]
-
-            # if T != clip_len:
-            #     feat = feat[:, :T, :]  # Undo padding if applied
-
-            # Spatial-Temporal Encoding
-            feat = rearrange(feat, 'b f h w -> b (h w) f')
-            feat = self._encoder["in_proj"](feat)  # [B, T, F]
-
-
-            frame_token = self.frame_token.expand(B * T, 1, self._hidden_dim)
-            feat = torch.cat([frame_token, feat], dim=1)  # [B, 1+T, F]
-            feat = self._encoder["mamba_s"](feat)[:, 0, :]
-            feat = rearrange(feat, '(b t) f -> b t f', b=B, t=T)
-            feat = self._encoder["mamba_t"](feat)
+            feat = rearrange(feat, "(b t) f h w -> b t f h w", b=B, t=clip_len)
+            feat = self._encoder(feat)  # [B, T, hidden_dim]
 
             # Predictions
             class_scores = self._pred_cls(feat)  # [B, T, num_classes]
-            loc_predictions = self._pred_loc(feat) if self._pred_loc else None  # [B, T, 2]
+            loc_predictions = (
+                self._pred_loc(feat) if self._pred_loc else None
+            )  # [B, T, 2]
 
             return {
                 "cls_logits": class_scores,
@@ -522,11 +491,13 @@ class E2EModel(BaseRGBModel):
                     else label.view(-1, label.shape[-1])
                 )
 
-                with (
-                    torch.cuda.amp.autocast()
-                    if optimizer is not None
-                    else nullcontext()
-                ):
+                # with (
+                #     torch.cuda.amp.autocast()
+                #     if optimizer is not None
+                #     else nullcontext()
+                # ):
+
+                with nullcontext():
                     preds = self._model(frame)
 
                     # cnn_feat = preds["cnn_feat"]
@@ -572,12 +543,13 @@ class E2EModel(BaseRGBModel):
                             breakpoint()
 
                     # loss = loss_cls + loss_loc + loss_contrast * 0.1
-                    loss = loss_cls + loss_loc 
+                    loss = loss_cls + loss_loc
 
                 if optimizer is not None:
                     step(
                         optimizer,
-                        scaler,
+                        # scaler,
+                        None,
                         loss / acc_grad_iter,
                         lr_scheduler=lr_scheduler,
                         backward_only=(batch_idx + 1) % acc_grad_iter != 0,
@@ -618,7 +590,9 @@ class E2EModel(BaseRGBModel):
         with torch.no_grad():
             with torch.cuda.amp.autocast() if use_amp else nullcontext():
                 pred_dict = self._model(seq)
-            pred_cls_score = torch.softmax(pred_dict["cls_logits"], axis=2).cpu().numpy()
+            pred_cls_score = (
+                torch.softmax(pred_dict["cls_logits"], axis=2).cpu().numpy()
+            )
             pred_cls = torch.argmax(pred_dict["cls_logits"], axis=2).cpu().numpy()
             if self._model._predict_location:
                 pred_loc = (
@@ -990,7 +964,7 @@ def main(args):
         modality=args.modality,
         multi_gpu=args.gpu_parallel,
         predict_location=args.predict_location,
-        hidden_dim=args.hidden_dim
+        hidden_dim=args.hidden_dim,
     )
 
     if not args.eval_only:

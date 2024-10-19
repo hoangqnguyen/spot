@@ -58,6 +58,7 @@ class BaseRGBModel(ABCModel):
 
 
 def step(optimizer, scaler, loss, lr_scheduler=None, backward_only=False):
+    
     if scaler is None:
         loss.backward()
     else:
