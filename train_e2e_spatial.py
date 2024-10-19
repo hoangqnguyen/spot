@@ -62,7 +62,7 @@ def get_args():
         required=True,
         choices=[
             # From torchvision
-            "vim",
+            "vim"
             "rn18",
             "rn18_tsm",
             "rn18_gsm",
@@ -293,15 +293,6 @@ class E2EModel(BaseRGBModel):
                         bias=False,
                     )
 
-            elif feature_arch.startswith(("vim")):
-                from Vim.vim import models_mamba as vim
-
-                features = vim.vim_tiny_patch16_stride8_224_bimambav2_final_pool_mean_abs_pos_embed_with_midclstok_div2(pretrained=False)
-                features.load_state_dict(torch.load('pretrained/vim_t_midclstok_ft_78p3acc.pth')['model'])
-                feat_dim = features.head.in_features
-                features.head = nn.Identity()
-
-
             elif feature_arch.startswith(("rny002", "rny008")):
                 features = timm.create_model(
                     {
@@ -363,16 +354,16 @@ class E2EModel(BaseRGBModel):
             #     prenorm=prenorm
             # )
 
-            # self.frame_token = nn.Parameter(torch.randn(1, 1, self._hidden_dim))
+            self.frame_token = nn.Parameter(torch.randn(1, 1, self._hidden_dim))
 
             self._encoder = nn.ModuleDict({
                 "in_proj": nn.Linear(self._feat_dim, self._hidden_dim),
-                # "mamba_s": Mamba(                    
-                #     d_model=self._hidden_dim, # Model dimension d_model
-                #     d_state=16,  # SSM state expansion factor
-                #     d_conv=4,    # Local convolution width
-                #     expand=2,    # Block expansion factor
-                # ),
+                "mamba_s": Mamba(                    
+                    d_model=self._hidden_dim, # Model dimension d_model
+                    d_state=16,  # SSM state expansion factor
+                    d_conv=4,    # Local convolution width
+                    expand=2,    # Block expansion factor
+                ),
                 
                 "mamba_t": Mamba(                    
                     d_model=self._hidden_dim, # Model dimension d_model
@@ -414,8 +405,7 @@ class E2EModel(BaseRGBModel):
 
             # Feature Extraction
             x = x.view(-1, C, H, W)  # Merge batch and temporal dimensions
-            feat = self._features(x).reshape(B, clip_len, self._feat_dim)
-            # breakpoint()
+            feat = self._features(x)[-1]  # [B*T, F, H', W']
             
             # feat = feat.view(B, clip_len, self._feat_dim)  # [B, T, F]
 
@@ -423,23 +413,23 @@ class E2EModel(BaseRGBModel):
             #     feat = feat[:, :T, :]  # Undo padding if applied
 
             # Spatial-Temporal Encoding
-            # feat = rearrange(feat, 'b f h w -> b (h w) f')
-
-
+            feat = rearrange(feat, 'b f h w -> b (h w) f')
             feat = self._encoder["in_proj"](feat)  # [B, T, F]
-            # frame_token = self.frame_token.expand(B * T, 1, self._hidden_dim)
-            # feat = torch.cat([frame_token, feat], dim=1)  # [B, 1+T, F]
-            # feat = self._encoder["mamba_s"](feat)[:, 0, :]
-            # feat = rearrange(feat, '(b t) f -> b t f', b=B, t=T)
+
+
+            frame_token = self.frame_token.expand(B * T, 1, self._hidden_dim)
+            feat = torch.cat([frame_token, feat], dim=1)  # [B, 1+T, F]
+            feat = self._encoder["mamba_s"](feat)[:, 0, :]
+            feat = rearrange(feat, '(b t) f -> b t f', b=B, t=T)
             feat = self._encoder["mamba_t"](feat)
 
             # Predictions
-            cls_logits = self._pred_cls(feat)  # [B, T, num_classes]
-            loc_logits = self._pred_loc(feat) if self._pred_loc else None  # [B, T, 2]
+            class_scores = self._pred_cls(feat)  # [B, T, num_classes]
+            loc_predictions = self._pred_loc(feat) if self._pred_loc else None  # [B, T, 2]
 
             return {
-                "cls_logits": cls_logits,
-                "loc_logits": loc_logits,
+                "cls_logits": class_scores,
+                "loc_logits": loc_predictions,
             }
 
         def print_stats(self):
