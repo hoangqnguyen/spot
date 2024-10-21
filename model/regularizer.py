@@ -23,7 +23,7 @@ class FrameOrderRegularizer(nn.Module):
 
         # predict the order of the permuted x
         order_pred = self.order_pred(x_perm)
-        loss_order = nn.CrossEntropyLoss()(order_pred, tgt_idx)
+        loss_order = nn.functional.cross_entropy(order_pred, tgt_idx)
         return loss_order
 
 
