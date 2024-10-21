@@ -196,11 +196,14 @@ class ActionSpotDataset(Dataset):
 
         # Sample based on foreground labels
         if self._fg_upsample > 0:
-            self._flat_labels = []
+            self._fg_labels = {}
             for i, x in enumerate(self._labels):
                 for event in x["events"]:
                     if event["frame"] < x["num_frames"]:
-                        self._flat_labels.append((i, event["frame"]))
+                        self._fg_labels[event["label"]] = self._fg_labels.get(
+                            event["label"], []
+                        ) + [(i, event["frame"])]
+                        # self._fg_labels.append((i, event["frame"]))
 
         self._mixup = mixup
 
@@ -219,7 +222,12 @@ class ActionSpotDataset(Dataset):
         return video_meta, base_idx
 
     def _sample_foreground(self):
-        video_idx, frame_idx = random.choices(self._flat_labels)[0]
+        # choose a random event with uniform probability
+        chosen_event_label = random.choice(list(self._fg_labels.keys()))
+
+        # choose a random frame from the chosen event
+        video_idx, frame_idx = random.choices(self._fg_labels[chosen_event_label])[0]
+
         video_meta = self._labels[video_idx]
         video_len = video_meta["num_frames"]
 
@@ -242,6 +250,7 @@ class ActionSpotDataset(Dataset):
 
     def _get_one(self):
         if self._fg_upsample > 0 and random.random() >= self._fg_upsample:
+            # Sample a clip with a foreground event with probability fg_upsample
             video_meta, base_idx = self._sample_foreground()
         else:
             video_meta, base_idx = self._sample_uniform()
