@@ -31,7 +31,7 @@ from util.io import load_json, store_json, store_gz_json, clear_files
 from util.dataset import DATASETS, load_classes
 from util.score import compute_mAPs, compute_mAPs_with_locations
 from torchvision.ops.focal_loss import sigmoid_focal_loss
-
+from model import regularizer
 
 EPOCH_NUM_FRAMES = 500000
 
@@ -337,7 +337,7 @@ class E2EModel(BaseRGBModel):
             self._features = features
             self._feat_dim = feat_dim
             self._hidden_dim = hidden_dim
-            
+
             # Initialize Spatial-Temporal Encoder
             self._encoder = ChannelTemporalEncoder(
                 feat_dim=self._feat_dim,
@@ -346,7 +346,7 @@ class E2EModel(BaseRGBModel):
                 reduction=reduction,
                 num_heads=num_heads,
                 dropout=dropout,
-                prenorm=prenorm
+                prenorm=prenorm,
             )
 
             # Prediction heads
@@ -359,10 +359,10 @@ class E2EModel(BaseRGBModel):
         def forward(self, x):
             """
             Forward pass of the E2EModel.
-            
+
             Args:
                 x (torch.Tensor): Input tensor of shape [B, T, C, H, W]
-            
+
             Returns:
                 dict: Dictionary containing class scores and location predictions.
             """
@@ -392,11 +392,14 @@ class E2EModel(BaseRGBModel):
 
             # Predictions
             class_scores = self._pred_cls(feat)  # [B, T, num_classes]
-            loc_predictions = self._pred_loc(feat) if self._pred_loc else None  # [B, T, 2]
+            loc_predictions = (
+                self._pred_loc(feat) if self._pred_loc else None
+            )  # [B, T, 2]
 
             return {
                 "cls_logits": class_scores,
                 "loc_logits": loc_predictions,
+                "cnn_feat": feat,
             }
 
         def print_stats(self):
@@ -444,6 +447,9 @@ class E2EModel(BaseRGBModel):
             self._model = nn.DataParallel(self._model)
 
         self._model.to(device)
+        self._regularizer = regularizer.FrameOrderRegularizer(hidden_dim, clip_len).to(
+            device
+        )
         self._num_classes = num_classes
 
     def epoch(
@@ -471,6 +477,7 @@ class E2EModel(BaseRGBModel):
         epoch_loss_cls = 0.0
         epoch_loss_loc = 0.0
         # epoch_loss_contrast = 0.0
+        epoch_loss_reg = 0.0
 
         with torch.no_grad() if optimizer is None else nullcontext():
             pbar = tqdm(loader)
@@ -496,7 +503,7 @@ class E2EModel(BaseRGBModel):
                 ):
                     preds = self._model(frame)
 
-                    # cnn_feat = preds["cnn_feat"]
+                    cnn_feat = preds["cnn_feat"]
                     pred = preds["cls_logits"]
                     loc = preds["loc_logits"]
 
@@ -539,7 +546,8 @@ class E2EModel(BaseRGBModel):
                             breakpoint()
 
                     # loss = loss_cls + loss_loc + loss_contrast * 0.1
-                    loss = loss_cls + loss_loc 
+                    loss_reg = self._regularizer(cnn_feat)
+                    loss = loss_cls + loss_loc + loss_reg
 
                 if optimizer is not None:
                     step(
@@ -553,6 +561,7 @@ class E2EModel(BaseRGBModel):
                 epoch_loss += loss.detach().item()
                 epoch_loss_cls += loss_cls.detach().item()
                 # epoch_loss_contrast += loss_contrast.detach().item()
+                epoch_loss_reg += loss_reg.detach().item()
 
                 if self._model._predict_location:
                     epoch_loss_loc += loss_loc.detach().item()
@@ -563,6 +572,7 @@ class E2EModel(BaseRGBModel):
                         "cls": loss_cls.detach().item(),
                         "loc": loss_loc.detach().item(),
                         # "contrast": loss_contrast.detach().item(),
+                        "reg": loss_reg.detach().item(),
                     }
                 )
 
@@ -570,6 +580,7 @@ class E2EModel(BaseRGBModel):
             "sum": epoch_loss / len(loader),
             "cls": epoch_loss_cls / len(loader),
             "loc": epoch_loss_loc / len(loader),
+            "reg": epoch_loss_reg / len(loader),
             # "contrast": epoch_loss_contrast / len(loader),
         }
 
@@ -585,7 +596,9 @@ class E2EModel(BaseRGBModel):
         with torch.no_grad():
             with torch.cuda.amp.autocast() if use_amp else nullcontext():
                 pred_dict = self._model(seq)
-            pred_cls_score = torch.softmax(pred_dict["cls_logits"], axis=2).cpu().numpy()
+            pred_cls_score = (
+                torch.softmax(pred_dict["cls_logits"], axis=2).cpu().numpy()
+            )
             pred_cls = torch.argmax(pred_dict["cls_logits"], axis=2).cpu().numpy()
             if self._model._predict_location:
                 pred_loc = (
@@ -957,7 +970,7 @@ def main(args):
         modality=args.modality,
         multi_gpu=args.gpu_parallel,
         predict_location=args.predict_location,
-        hidden_dim=args.hidden_dim
+        hidden_dim=args.hidden_dim,
     )
 
     if not args.eval_only:

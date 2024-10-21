@@ -124,13 +124,13 @@ def _get_img_transforms(crop_dim=224, is_eval=False):
 
     return transforms.Compose(
         [
-            transforms.Lambda(lambda img: check_for_nan(img, "Initial")),
+            # transforms.Lambda(lambda img: check_for_nan(img, "Initial")),
             *geometric_transforms,
-            transforms.Lambda(lambda img: check_for_nan(img, "Geometric Transforms")),
+            # transforms.Lambda(lambda img: check_for_nan(img, "Geometric Transforms")),
             *img_transforms,
-            transforms.Lambda(
-                lambda img: check_for_nan(img, "Color Jittering and Normalization")
-            ),
+            # transforms.Lambda(
+            #     lambda img: check_for_nan(img, "Color Jittering and Normalization")
+            # ),
         ]
     )
 
