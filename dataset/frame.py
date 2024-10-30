@@ -247,11 +247,7 @@ class ActionSpotDataset(Dataset):
             video_meta, base_idx = self._sample_uniform()
 
         labels = np.zeros(self._clip_len, np.int64)
-        event_xys = (
-            np.zeros((self._clip_len, 2), np.float32)
-            if "kovo" in self._dataset
-            else None
-        )
+        event_xys = np.zeros((self._clip_len, 2), np.float32)
 
         for event in video_meta["events"]:
             event_frame = event["frame"]

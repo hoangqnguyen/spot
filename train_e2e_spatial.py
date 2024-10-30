@@ -337,7 +337,7 @@ class E2EModel(BaseRGBModel):
             self._features = features
             self._feat_dim = feat_dim
             self._hidden_dim = hidden_dim
-            
+
             # Initialize Spatial-Temporal Encoder
             self._encoder = SpatialTemporalEncoder(
                 feat_dim=self._feat_dim,
@@ -346,7 +346,7 @@ class E2EModel(BaseRGBModel):
                 reduction=reduction,
                 num_heads=num_heads,
                 dropout=dropout,
-                prenorm=prenorm
+                prenorm=prenorm,
             )
 
             # Prediction heads
@@ -359,10 +359,10 @@ class E2EModel(BaseRGBModel):
         def forward(self, x):
             """
             Forward pass of the E2EModel.
-            
+
             Args:
                 x (torch.Tensor): Input tensor of shape [B, T, C, H, W]
-            
+
             Returns:
                 dict: Dictionary containing class scores and location predictions.
             """
@@ -392,7 +392,9 @@ class E2EModel(BaseRGBModel):
 
             # Predictions
             class_scores = self._pred_fine(feat)  # [B, T, num_classes]
-            loc_predictions = self._pred_loc(feat) if self._pred_loc else None  # [B, T, 2]
+            loc_predictions = (
+                self._pred_loc(feat) if self._pred_loc else None
+            )  # [B, T, 2]
 
             return {
                 "im_feat": class_scores,
@@ -524,15 +526,15 @@ class E2EModel(BaseRGBModel):
                         pred_loc = loc.reshape(-1, 2)  # B*T, 2
 
                         event_mask = (label != 0).float().reshape(-1)  # B*T
+                        target_mask = (target_xy > 0).any(dim=-1).float()  # B*T
+                        mask = event_mask * target_mask
 
                         # Apply the standard L1 loss to the masked x and y coordinates
                         xy_loss = F.l1_loss(
                             pred_loc.sigmoid(), target_xy, reduction="none"
                         ).sum(dim=-1)
 
-                        loss_loc += (xy_loss * event_mask).sum() / (
-                            event_mask.sum() + 1e-6
-                        )
+                        loss_loc += (xy_loss * mask).sum() / (mask.sum() + 1e-6)
 
                         # breakpoint if loss loc is nan
                         if torch.isnan(loss_loc):
@@ -956,7 +958,7 @@ def main(args):
         modality=args.modality,
         multi_gpu=args.gpu_parallel,
         predict_location=args.predict_location,
-        hidden_dim=args.hidden_dim
+        hidden_dim=args.hidden_dim,
     )
 
     if not args.eval_only:
