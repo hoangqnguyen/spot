@@ -146,6 +146,7 @@ def compute_average_precision_with_locations(
         if (
             gt_closest is not None
             and abs(frame - gt_closest) <= tolerance_t
+            and np.any(gt_closest_xy > 0, axis=-1)
             and int(np.linalg.norm(np.subtract(pred_xy, gt_closest_xy))) <= tolerance_p
         ):
             recalled.add((video, gt_closest))
@@ -259,7 +260,7 @@ def filter_events_by_score(data, fg_threshold):
 def scale_xy(data, px_scale):
     for video in data:
         for event in video["events"]:
-            event["xy"] = [coord * px_scale for coord in event["xy"]]
+            event["xy"] = [coord * px_scale for coord in event.get("xy", [0, 0])]
     return data
 
 

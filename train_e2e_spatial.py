@@ -95,16 +95,14 @@ def get_args():
         default=2,
     )
 
-
     parser.add_argument(
         "-p",
         "--pred_loc_arch",
         type=str,
-        default="mlp",
+        default="smlp",
         # choices=["mlp", "gmlp"],
     )
 
-    
     parser.add_argument(
         "--loc_gmlp_layers",
         type=int,
@@ -346,8 +344,15 @@ class E2EModel(BaseRGBModel):
                     )
                 elif temporal_arch == "mingru":
                     from model.min_gru import MinRNNPredictor
-                    
-                    self._pred_fine = MinRNNPredictor(input_size=feat_dim, hidden_size=hidden_dim, output_size=num_classes, n_layers=3, rnn_type='mingru', batch_first=True)
+
+                    self._pred_fine = MinRNNPredictor(
+                        input_size=feat_dim,
+                        hidden_size=hidden_dim,
+                        output_size=num_classes,
+                        n_layers=3,
+                        rnn_type="mingru",
+                        batch_first=True,
+                    )
                 else:
                     raise NotImplementedError(temporal_arch)
             elif temporal_arch == "mstcn":
@@ -358,6 +363,7 @@ class E2EModel(BaseRGBModel):
                 self._pred_fine = FCPrediction(feat_dim, num_classes)
             elif temporal_arch == "gmlp":
                 from g_mlp_pytorch.g_mlp_pytorch import Residual, gMLPBlock, PreNorm
+
                 hidden_dim = feat_dim
                 self._pred_fine = nn.Sequential(
                     nn.LayerNorm(hidden_dim),
@@ -455,7 +461,6 @@ class E2EModel(BaseRGBModel):
                         # nn.Linear(hidden_dim, 2),
                     )
 
-                
                 if pred_loc_arch == "smlp":
                     self._pred_loc = nn.Sequential(
                         MLP(
@@ -557,7 +562,7 @@ class E2EModel(BaseRGBModel):
         multi_gpu=False,
         pred_loc_arch="mlp",
         temp_gmlp_layers=2,
-        loc_gmlp_layers=2,        
+        loc_gmlp_layers=2,
         tgmlp_attn_dim=None,
         lgmlp_attn_dim=None,
     ):
@@ -663,15 +668,15 @@ class E2EModel(BaseRGBModel):
                         pred_loc = loc.reshape(-1, 2)  # B*T, 2
 
                         event_mask = (label != 0).float().reshape(-1)  # B*T
+                        target_mask = (target_xy > 0).any(dim=-1).float()  # B*T
+                        mask = event_mask * target_mask
 
                         # Apply the standard L1 loss to the masked x and y coordinates
                         xy_loss = F.l1_loss(
                             pred_loc.sigmoid(), target_xy, reduction="none"
                         ).sum(dim=-1)
 
-                        loss_loc += (xy_loss * event_mask).sum() / (
-                            event_mask.sum() + 1e-6
-                        )
+                        loss_loc += (xy_loss * mask).sum() / (mask.sum() + 1e-6)
 
                         # breakpoint if loss loc is nan
                         if torch.isnan(loss_loc):
@@ -1113,7 +1118,7 @@ def main(args):
             train_data,
             shuffle=False,
             batch_size=loader_batch_size,
-            pin_memory=True,
+            # pin_memory=True,
             num_workers=get_num_train_workers(args),
             prefetch_factor=1,
             worker_init_fn=worker_init_fn,
@@ -1122,7 +1127,7 @@ def main(args):
             val_data,
             shuffle=False,
             batch_size=loader_batch_size,
-            pin_memory=True,
+            # pin_memory=True,
             num_workers=BASE_NUM_WORKERS,
             worker_init_fn=worker_init_fn,
         )
