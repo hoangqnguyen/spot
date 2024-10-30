@@ -47,7 +47,8 @@ MAX_GRU_HIDDEN_DIM = 768
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("dataset", type=str, choices=DATASETS)
+    # parser.add_argument("dataset", type=str, choices=DATASETS)
+    parser.add_argument("dataset", type=str)
     parser.add_argument("frame_dir", type=str, help="Path to extracted frames")
 
     parser.add_argument(
