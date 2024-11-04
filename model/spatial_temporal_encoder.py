@@ -30,6 +30,14 @@ class SpatialAttention(nn.Module):
         return x * y.expand(-1, T, -1)  # [B, T, F]
 
 
+class ZeroMask(nn.Module):
+    def __init__(self):
+        super(ZeroMask, self).__init__()
+
+    def forward(self, x):
+        return x * 0
+
+
 class SpatialTemporalAttnBlock(nn.Module):
     """
     Spatial-Temporal Attention Block integrating Spatial and Temporal Attention using
@@ -43,7 +51,15 @@ class SpatialTemporalAttnBlock(nn.Module):
         prenorm (bool): If True, applies LayerNorm before each attention sub-layer.
     """
 
-    def __init__(self, feat_dim, reduction=8, num_heads=8, dropout=0.1, prenorm=True):
+    def __init__(
+        self,
+        feat_dim,
+        reduction=8,
+        num_heads=8,
+        dropout=0.1,
+        prenorm=True,
+        disable_channel_attention=False,
+    ):
         super(SpatialTemporalAttnBlock, self).__init__()
         self.num_heads = num_heads
         self.head_dim = feat_dim // num_heads
@@ -55,8 +71,14 @@ class SpatialTemporalAttnBlock(nn.Module):
 
         # Spatial Attention
         self.norm1 = nn.LayerNorm(feat_dim) if prenorm else nn.Identity()
-        self.spatial_attn = SpatialAttention(feat_dim, reduction)
-        self.spatial_dropout = nn.Dropout(dropout)
+        self.spatial_attn = (
+            SpatialAttention(feat_dim, reduction)
+            if not disable_channel_attention
+            else ZeroMask()
+        )
+        self.spatial_dropout = (
+            nn.Dropout(dropout) if not disable_channel_attention else ZeroMask()
+        )
 
         # Temporal Attention
         self.norm2 = nn.LayerNorm(feat_dim) if prenorm else nn.Identity()
@@ -157,6 +179,7 @@ class SpatialTemporalEncoder(nn.Module):
         num_heads=8,
         dropout=0.1,
         prenorm=True,
+        disable_channel_attention=False,
     ):
         super(SpatialTemporalEncoder, self).__init__()
         self.ft_projection = nn.Linear(feat_dim, hidden_dim)
@@ -168,6 +191,7 @@ class SpatialTemporalEncoder(nn.Module):
                     num_heads=num_heads,
                     dropout=dropout,
                     prenorm=prenorm,
+                    disable_channel_attention=disable_channel_attention,
                 )
                 for _ in range(num_layers)
             ]

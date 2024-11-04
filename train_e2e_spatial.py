@@ -81,6 +81,13 @@ def get_args():
         ],
         help="CNN architecture for feature extraction",
     )
+
+    parser.add_argument(
+        "--disable_channel_attention",
+        action="store_true",
+        help="Disable channel attention in the feature extractor",
+    )
+
     parser.add_argument(
         "-t",
         "--temporal_arch",
@@ -265,6 +272,7 @@ class E2EModel(BaseRGBModel):
             dropout=0.1,
             prenorm=True,
             hidden_dim=256,
+            disable_channel_attention=False,
         ):
             super().__init__()
             self._predict_location = predict_location
@@ -337,7 +345,7 @@ class E2EModel(BaseRGBModel):
             self._features = features
             self._feat_dim = feat_dim
             self._hidden_dim = hidden_dim
-            
+
             # Initialize Spatial-Temporal Encoder
             self._encoder = SpatialTemporalEncoder(
                 feat_dim=self._feat_dim,
@@ -346,7 +354,8 @@ class E2EModel(BaseRGBModel):
                 reduction=reduction,
                 num_heads=num_heads,
                 dropout=dropout,
-                prenorm=prenorm
+                prenorm=prenorm,
+                disable_channel_attention=disable_channel_attention,
             )
 
             # Prediction heads
@@ -359,10 +368,10 @@ class E2EModel(BaseRGBModel):
         def forward(self, x):
             """
             Forward pass of the E2EModel.
-            
+
             Args:
                 x (torch.Tensor): Input tensor of shape [B, T, C, H, W]
-            
+
             Returns:
                 dict: Dictionary containing class scores and location predictions.
             """
@@ -392,7 +401,9 @@ class E2EModel(BaseRGBModel):
 
             # Predictions
             class_scores = self._pred_fine(feat)  # [B, T, num_classes]
-            loc_predictions = self._pred_loc(feat) if self._pred_loc else None  # [B, T, 2]
+            loc_predictions = (
+                self._pred_loc(feat) if self._pred_loc else None
+            )  # [B, T, 2]
 
             return {
                 "im_feat": class_scores,
@@ -425,6 +436,7 @@ class E2EModel(BaseRGBModel):
         multi_gpu=False,
         pred_loc_arch="mlp",
         hidden_dim=256,
+        disable_channel_attention=False,
     ):
         self.device = device
         self._multi_gpu = multi_gpu
@@ -436,6 +448,7 @@ class E2EModel(BaseRGBModel):
             modality,
             predict_location,
             hidden_dim=hidden_dim,
+            disable_channel_attention=disable_channel_attention,
         )
         # self._model = torch.compile(self._model)
         self._model.print_stats()
@@ -956,7 +969,8 @@ def main(args):
         modality=args.modality,
         multi_gpu=args.gpu_parallel,
         predict_location=args.predict_location,
-        hidden_dim=args.hidden_dim
+        hidden_dim=args.hidden_dim,
+        disable_channel_attention=args.disable_channel_attention,
     )
 
     if not args.eval_only:
