@@ -249,7 +249,7 @@ class ActionSpotDataset(Dataset):
         labels = np.zeros(self._clip_len, np.int64)
         event_xys = (
             np.zeros((self._clip_len, 2), np.float32)
-            if "kovo" in self._dataset
+            if "kovo" in self._dataset or "imrcvolley" in self._dataset
             else None
         )
 
