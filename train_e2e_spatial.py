@@ -95,7 +95,6 @@ def get_args():
         default=2,
     )
 
-
     parser.add_argument(
         "-p",
         "--pred_loc_arch",
@@ -104,7 +103,6 @@ def get_args():
         # choices=["mlp", "gmlp"],
     )
 
-    
     parser.add_argument(
         "--loc_gmlp_layers",
         type=int,
@@ -177,6 +175,8 @@ def get_args():
     parser.add_argument(
         "--debug_only", action="store_true", help="As the name suggests"
     )
+
+    parser.add_argument("--time_backward", action="store_true")
 
     # Eval mode
     parser.add_argument("--eval_only", action="store_true", help="As the name suggests")
@@ -259,8 +259,10 @@ class E2EModel(BaseRGBModel):
             loc_gmlp_layers=2,
             tgmlp_attn_dim=None,
             lgmlp_attn_dim=None,
+            time_backward=False,
         ):
             super().__init__()
+            self.time_backward = time_backward
             is_rgb = modality == "rgb"
             in_channels = {"flow": 2, "bw": 1, "rgb": 3}[modality]
 
@@ -346,8 +348,15 @@ class E2EModel(BaseRGBModel):
                     )
                 elif temporal_arch == "mingru":
                     from model.min_gru import MinRNNPredictor
-                    
-                    self._pred_fine = MinRNNPredictor(input_size=feat_dim, hidden_size=hidden_dim, output_size=num_classes, n_layers=3, rnn_type='mingru', batch_first=True)
+
+                    self._pred_fine = MinRNNPredictor(
+                        input_size=feat_dim,
+                        hidden_size=hidden_dim,
+                        output_size=num_classes,
+                        n_layers=3,
+                        rnn_type="mingru",
+                        batch_first=True,
+                    )
                 else:
                     raise NotImplementedError(temporal_arch)
             elif temporal_arch == "mstcn":
@@ -358,6 +367,7 @@ class E2EModel(BaseRGBModel):
                 self._pred_fine = FCPrediction(feat_dim, num_classes)
             elif temporal_arch == "gmlp":
                 from g_mlp_pytorch.g_mlp_pytorch import Residual, gMLPBlock, PreNorm
+
                 hidden_dim = feat_dim
                 self._pred_fine = nn.Sequential(
                     nn.LayerNorm(hidden_dim),
@@ -455,7 +465,6 @@ class E2EModel(BaseRGBModel):
                         # nn.Linear(hidden_dim, 2),
                     )
 
-                
                 if pred_loc_arch == "smlp":
                     self._pred_loc = nn.Sequential(
                         MLP(
@@ -502,7 +511,9 @@ class E2EModel(BaseRGBModel):
 
         def forward(self, x):
             batch_size, true_clip_len, channels, height, width = x.shape
-            # print(x.shape)
+
+            if self.time_backward:
+                x = x.flip(1)
 
             clip_len = true_clip_len
             if self._require_clip_len > 0:
@@ -525,9 +536,12 @@ class E2EModel(BaseRGBModel):
             loc_feat = None
             if self._predict_location:
                 loc_feat = self._pred_loc(im_feat)
+                if self.time_backward:
+                    loc_feat = loc_feat.flip(1)
 
+            ev_feat = self._pred_fine(im_feat)
             return {
-                "im_feat": self._pred_fine(im_feat),
+                "im_feat": ev_feat if not self.time_backward else ev_feat.flip(1),
                 "loc_feat": loc_feat,
                 "cnn_feat": im_feat,
             }
@@ -557,9 +571,10 @@ class E2EModel(BaseRGBModel):
         multi_gpu=False,
         pred_loc_arch="mlp",
         temp_gmlp_layers=2,
-        loc_gmlp_layers=2,        
+        loc_gmlp_layers=2,
         tgmlp_attn_dim=None,
         lgmlp_attn_dim=None,
+        time_backward=False,
     ):
         self.device = device
         self._multi_gpu = multi_gpu
@@ -575,6 +590,7 @@ class E2EModel(BaseRGBModel):
             loc_gmlp_layers=loc_gmlp_layers,
             tgmlp_attn_dim=tgmlp_attn_dim,
             lgmlp_attn_dim=lgmlp_attn_dim,
+            time_backward=time_backward,
         )
         # self._model = torch.compile(self._model)
         self._model.print_stats()
@@ -1100,6 +1116,7 @@ def main(args):
         loc_gmlp_layers=args.loc_gmlp_layers,
         tgmlp_attn_dim=args.tgmlp_attn_dim,
         lgmlp_attn_dim=args.lgmlp_attn_dim,
+        time_backward=args.time_backward,
     )
 
     if not args.eval_only:
