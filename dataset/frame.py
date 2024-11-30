@@ -50,7 +50,7 @@ class FrameReader:
                 img = self.read_frame(frame_path)
                 ret.append(img)
             except RuntimeError:
-                # print('Missing file!', frame_path)
+                # print("Missing file!", frame_path)
                 n_pad_end += 1
 
         # In the multicrop case, the shape is (B, T, C, H, W)
@@ -249,7 +249,7 @@ class ActionSpotDataset(Dataset):
         labels = np.zeros(self._clip_len, np.int64)
         event_xys = (
             np.zeros((self._clip_len, 2), np.float32)
-            if "kovo" in self._dataset
+            if "kovo" in self._dataset or "imrcvolley" in self._dataset
             else None
         )
 

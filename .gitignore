@@ -2,6 +2,7 @@ __pycache__
 .vscode
 work_dir
 data/kovo*
+data/imrc*
 kovo_train
 .ipynb_checkpoints
 exp/*

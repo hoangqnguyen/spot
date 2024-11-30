@@ -12,6 +12,7 @@ DATASETS = [
     "soccernet_ball",
     "kovo",
     "kovo_288p",
+    "imrcvolley",
 ]
 
 
