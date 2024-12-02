@@ -78,6 +78,8 @@ def get_args():
             "convnextt",
             "convnextt_tsm",
             "convnextt_gsm",
+            # maxvit
+            "maxvit_224",
         ],
         help="CNN architecture for feature extraction",
     )
@@ -329,7 +331,19 @@ class E2EModel(BaseRGBModel):
                     features.stem[0] = nn.Conv2d(
                         in_channels, 96, kernel_size=4, stride=4
                     )
+            elif "maxvit" in feature_arch:
+                features = timm.create_model(
+                    "maxvit_tiny_tf_224.in1k",
+                    pretrained=True,
+                    num_classes=0,  # remove classifier nn.Linear
+                )
+                feat_dim = features.head.in_features
+                features.head = nn.Identity()
 
+                if not is_rgb:
+                    features.stem[0] = nn.Conv2d(
+                        in_channels, 96, kernel_size=4, stride=4
+                    )
             else:
                 raise NotImplementedError(feature_arch)
 
