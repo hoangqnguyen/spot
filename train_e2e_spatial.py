@@ -338,7 +338,7 @@ class E2EModel(BaseRGBModel):
                     num_classes=0,  # remove classifier nn.Linear
                 )
                 feat_dim = features.head.in_features
-                features.head = nn.Identity()
+                # features.head = nn.Identity()
 
                 if not is_rgb:
                     features.stem[0] = nn.Conv2d(
