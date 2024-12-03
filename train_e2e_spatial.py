@@ -77,6 +77,10 @@ def get_args():
             "convnextt",
             "convnextt_tsm",
             "convnextt_gsm",
+            # hg cv v2
+            "convnextt2",
+            "convnextt2_tsm",
+            "convnextt2_gsm",
         ],
         help="CNN architecture for feature extraction",
     )
@@ -306,6 +310,15 @@ class E2EModel(BaseRGBModel):
                         padding=(1, 1),
                         bias=False,
                     )
+
+            elif "convnextt2" in feature_arch:
+                from transformers import ConvNextV2ForImageClassification
+
+                features = ConvNextV2ForImageClassification.from_pretrained(
+                    "facebook/convnextv2-pico-1k-224"
+                )
+                feat_dim = features.classifier.in_features
+                features.classifier = nn.Identity()
 
             elif "convnextt" in feature_arch:
                 features = timm.create_model("convnext_tiny", pretrained=is_rgb)

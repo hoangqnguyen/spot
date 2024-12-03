@@ -13,8 +13,8 @@ DATASETS = [
     "soccernet_ball",
     "kovo",
     "kovo_288p",
+    "imrcvolley",
 ]
-c
 
 
 def load_classes(file_name):
