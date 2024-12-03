@@ -269,6 +269,7 @@ class E2EModel(BaseRGBModel):
             self.time_backward = time_backward
             is_rgb = modality == "rgb"
             in_channels = {"flow": 2, "bw": 1, "rgb": 3}[modality]
+            self.feature_arch = feature_arch
 
             if feature_arch.startswith(("rn18", "rn50")):
                 resnet_name = feature_arch.split("_")[0].replace("rn", "resnet")
@@ -537,10 +538,12 @@ class E2EModel(BaseRGBModel):
                 if true_clip_len < self._require_clip_len:
                     x = F.pad(x, (0,) * 7 + (self._require_clip_len - true_clip_len,))
                     clip_len = self._require_clip_len
+            im_feat = self._features(x.view(-1, channels, height, width))
 
-            im_feat = self._features(x.view(-1, channels, height, width)).reshape(
-                batch_size, clip_len, self._feat_dim
-            )
+            if "convnextt2" in self.feature_arch:
+                im_feat = im_feat.logits
+
+            im_feat = im_feat.reshape(batch_size, clip_len, self._feat_dim)
 
             if true_clip_len != clip_len:
                 # Undo padding
