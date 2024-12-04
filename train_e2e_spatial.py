@@ -131,6 +131,12 @@ def get_args():
         help="Use channel attention after the Backbone",
     )
 
+    parser.add_argument(
+        "--use_skip_connection",
+        action="store_true",
+        help="...",
+    )
+
     parser.add_argument("--clip_len", type=int, default=100)
     parser.add_argument("--crop_dim", type=int, default=224)
     parser.add_argument("--batch_size", type=int, default=8)
@@ -271,6 +277,7 @@ class E2EModel(BaseRGBModel):
             lgmlp_attn_dim=None,
             time_backward=False,
             use_channel_attention=False,
+            use_skip_connection=False,
         ):
             super().__init__()
             self.time_backward = time_backward
@@ -278,6 +285,7 @@ class E2EModel(BaseRGBModel):
             in_channels = {"flow": 2, "bw": 1, "rgb": 3}[modality]
             self.feature_arch = feature_arch
             self._use_channel_attention = use_channel_attention
+            self._use_skip_connection = use_skip_connection
 
             if feature_arch.startswith(("rn18", "rn50")):
                 resnet_name = feature_arch.split("_")[0].replace("rn", "resnet")
@@ -374,6 +382,7 @@ class E2EModel(BaseRGBModel):
                         num_classes,
                         hidden_dim,
                         num_layers=3 if temporal_arch[0] == "d" else 1,
+                        use_skip_connection=use_skip_connection,
                     )
                 elif temporal_arch == "mingru":
                     from model.min_gru import MinRNNPredictor
@@ -573,6 +582,7 @@ class E2EModel(BaseRGBModel):
                     loc_feat = loc_feat.flip(1)
 
             ev_feat = self._pred_fine(im_feat)
+
             return {
                 "im_feat": ev_feat if not self.time_backward else ev_feat.flip(1),
                 "loc_feat": loc_feat,
@@ -609,6 +619,7 @@ class E2EModel(BaseRGBModel):
         lgmlp_attn_dim=None,
         time_backward=False,
         use_channel_attention=False,
+        use_skip_connection=False,
     ):
         self.device = device
         self._multi_gpu = multi_gpu
@@ -626,6 +637,7 @@ class E2EModel(BaseRGBModel):
             lgmlp_attn_dim=lgmlp_attn_dim,
             time_backward=time_backward,
             use_channel_attention=use_channel_attention,
+            use_skip_connection=use_skip_connection,
         )
         # self._model = torch.compile(self._model)
         self._model.print_stats()
@@ -1153,6 +1165,7 @@ def main(args):
         lgmlp_attn_dim=args.lgmlp_attn_dim,
         time_backward=args.time_backward,
         use_channel_attention=args.use_channel_attention,
+        use_skip_connection=args.use_skip_connection,
     )
 
     if not args.eval_only:

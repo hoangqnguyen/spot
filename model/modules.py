@@ -22,8 +22,11 @@ class FCPrediction(nn.Module):
 
 class GRUPrediction(nn.Module):
 
-    def __init__(self, feat_dim, num_classes, hidden_dim, num_layers=1):
+    def __init__(
+        self, feat_dim, num_classes, hidden_dim, num_layers=1, use_skip_connection=False
+    ):
         super().__init__()
+        self._use_skip_connection = use_skip_connection
         self._gru = nn.GRU(
             feat_dim,
             hidden_dim,
@@ -31,12 +34,16 @@ class GRUPrediction(nn.Module):
             batch_first=True,
             bidirectional=True,
         )
+        self._fc_in = nn.Linear(feat_dim, 2 * hidden_dim)
         self._fc_out = FCPrediction(2 * hidden_dim, num_classes)
         self._dropout = nn.Dropout()
 
     def forward(self, x):
         y, _ = self._gru(x)
-        return self._fc_out(self._dropout(y))
+        y = self._dropout(y)
+        if self._use_skip_connection:
+            y = self._fc_in(x) + y
+        return self._fc_out(y)
 
 
 class TCNPrediction(nn.Module):
