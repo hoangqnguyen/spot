@@ -125,6 +125,12 @@ def get_args():
         default=None,
     )
 
+    parser.add_argument(
+        "--use_channel_attention",
+        action="store_true",
+        help="Use channel attention after the Backbone",
+    )
+
     parser.add_argument("--clip_len", type=int, default=100)
     parser.add_argument("--crop_dim", type=int, default=224)
     parser.add_argument("--batch_size", type=int, default=8)
@@ -264,12 +270,14 @@ class E2EModel(BaseRGBModel):
             tgmlp_attn_dim=None,
             lgmlp_attn_dim=None,
             time_backward=False,
+            use_channel_attention=False,
         ):
             super().__init__()
             self.time_backward = time_backward
             is_rgb = modality == "rgb"
             in_channels = {"flow": 2, "bw": 1, "rgb": 3}[modality]
             self.feature_arch = feature_arch
+            self._use_channel_attention = use_channel_attention
 
             if feature_arch.startswith(("rn18", "rn50")):
                 resnet_name = feature_arch.split("_")[0].replace("rn", "resnet")
@@ -334,6 +342,13 @@ class E2EModel(BaseRGBModel):
             else:
                 raise NotImplementedError(feature_arch)
 
+            if self._use_channel_attention:
+                from model.modules import ChannelAttention
+
+                self._channel_attention = ChannelAttention(feat_dim, reduction=8)
+
+            else:
+                self._channel_attention = nn.Identity()
             # Add Temporal Shift Modules
             self._require_clip_len = -1
             if feature_arch.endswith("_tsm"):
@@ -544,6 +559,8 @@ class E2EModel(BaseRGBModel):
                 im_feat = im_feat.logits
 
             im_feat = im_feat.reshape(batch_size, clip_len, self._feat_dim)
+            if self._use_channel_attention:
+                im_feat = self._channel_attention(im_feat)
 
             if true_clip_len != clip_len:
                 # Undo padding
@@ -591,6 +608,7 @@ class E2EModel(BaseRGBModel):
         tgmlp_attn_dim=None,
         lgmlp_attn_dim=None,
         time_backward=False,
+        use_channel_attention=False,
     ):
         self.device = device
         self._multi_gpu = multi_gpu
@@ -607,6 +625,7 @@ class E2EModel(BaseRGBModel):
             tgmlp_attn_dim=tgmlp_attn_dim,
             lgmlp_attn_dim=lgmlp_attn_dim,
             time_backward=time_backward,
+            use_channel_attention=use_channel_attention,
         )
         # self._model = torch.compile(self._model)
         self._model.print_stats()
@@ -1133,6 +1152,7 @@ def main(args):
         tgmlp_attn_dim=args.tgmlp_attn_dim,
         lgmlp_attn_dim=args.lgmlp_attn_dim,
         time_backward=args.time_backward,
+        use_channel_attention=args.use_channel_attention,
     )
 
     if not args.eval_only:
