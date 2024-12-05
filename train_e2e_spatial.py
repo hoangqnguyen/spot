@@ -61,25 +61,25 @@ def get_args():
         choices=[
             # From torchvision
             "rn18",
-            "rn18_tsm",
+            "rn18_gsf",
             "rn18_gsm",
             "rn50",
-            "rn50_tsm",
+            "rn50_gsf",
             "rn50_gsm",
             # From timm (following its naming conventions)
             "rny002",
-            "rny002_tsm",
+            "rny002_gsf",
             "rny002_gsm",
             "rny008",
-            "rny008_tsm",
+            "rny008_gsf",
             "rny008_gsm",
             # From timm
             "convnextt",
-            "convnextt_tsm",
+            "convnextt_gsf",
             "convnextt_gsm",
             # hg cv v2
             "convnextt2",
-            "convnextt2_tsm",
+            "convnextt2_gsf",
             "convnextt2_gsm",
         ],
         help="CNN architecture for feature extraction",
@@ -359,11 +359,11 @@ class E2EModel(BaseRGBModel):
                 self._channel_attention = nn.Identity()
             # Add Temporal Shift Modules
             self._require_clip_len = -1
-            if feature_arch.endswith("_tsm"):
-                make_temporal_shift(features, clip_len, is_gsm=False)
+            if feature_arch.endswith("_gsf"):
+                make_temporal_shift(features, clip_len, mode="gsf")
                 self._require_clip_len = clip_len
             elif feature_arch.endswith("_gsm"):
-                make_temporal_shift(features, clip_len, is_gsm=True)
+                make_temporal_shift(features, clip_len, mode="gsm")
                 self._require_clip_len = clip_len
 
             self._features = features
