@@ -556,7 +556,7 @@ class E2EModel(BaseRGBModel):
 
             return {
                 "im_feat": ev_feat if not self.time_backward else ev_feat.flip(1),
-                "eventness": eventness,
+                "eventness": eventness if not self.time_backward else eventness.flip(1),
                 "loc_feat": loc_feat,
                 "cnn_feat": im_feat,
             }
