@@ -517,11 +517,7 @@ class E2EModel(BaseRGBModel):
                         f"Unimplemented location predictor: {pred_loc_arch}"
                     )
 
-                # from model.common import ImprovedLocationPredictor
-
-                # self._pred_loc = ImprovedLocationPredictor(
-                #     input_dim=hidden_dim, hidden_dim=256, output_dim=2
-                # )
+                self._pred_eventness = nn.Linear(hidden_dim, 1)
 
         def forward(self, x):
             batch_size, true_clip_len, channels, height, width = x.shape
@@ -555,9 +551,12 @@ class E2EModel(BaseRGBModel):
                 if self.time_backward:
                     loc_feat = loc_feat.flip(1)
 
-            ev_feat = self._pred_fine(im_feat)
+            eventness = self._pred_eventness(im_feat)
+            ev_feat = self._pred_fine(im_feat * eventness.sigmoid())
+
             return {
                 "im_feat": ev_feat if not self.time_backward else ev_feat.flip(1),
+                "eventness": eventness,
                 "loc_feat": loc_feat,
                 "cnn_feat": im_feat,
             }
@@ -642,6 +641,7 @@ class E2EModel(BaseRGBModel):
         epoch_loss_cls = 0.0
         epoch_loss_loc = 0.0
         epoch_loss_contrast = 0.0
+        epoch_loss_eventness = 0.0
 
         with torch.no_grad() if optimizer is None else nullcontext():
             pbar = tqdm(loader)
@@ -660,6 +660,8 @@ class E2EModel(BaseRGBModel):
                     else label.view(-1, label.shape[-1])
                 )
 
+                eventness_gt = label > 0
+
                 with (
                     torch.cuda.amp.autocast()
                     if optimizer is not None
@@ -670,6 +672,7 @@ class E2EModel(BaseRGBModel):
                     cnn_feat = preds["cnn_feat"]
                     pred = preds["im_feat"]
                     loc = preds["loc_feat"]
+                    eventness_pred = preds["eventness"]
 
                     loss = 0.0
                     loss_cls = 0.0
@@ -677,6 +680,9 @@ class E2EModel(BaseRGBModel):
 
                     # loss_contrast = calculate_loss_contrast(cnn_feat.flatten(0,1), label)
                     loss_contrast = torch.tensor(0.0).to(self.device)
+                    loss_eventness = nn.functional.binary_cross_entropy_with_logits(
+                        eventness_pred.flatten(), eventness_gt.float()
+                    )
 
                     if len(pred.shape) == 3:
                         pred = pred.unsqueeze(0)
@@ -709,7 +715,7 @@ class E2EModel(BaseRGBModel):
                         if torch.isnan(loss_loc):
                             breakpoint()
 
-                    loss = loss_cls + loss_loc + loss_contrast * 0.1
+                    loss = loss_cls + loss_loc + loss_eventness
 
                 if optimizer is not None:
                     step(
@@ -722,7 +728,8 @@ class E2EModel(BaseRGBModel):
 
                 epoch_loss += loss.detach().item()
                 epoch_loss_cls += loss_cls.detach().item()
-                epoch_loss_contrast += loss_contrast.detach().item()
+                # epoch_loss_contrast += loss_contrast.detach().item()
+                epoch_loss_eventness += loss_eventness.detach().item()
 
                 if self._model._predict_location:
                     epoch_loss_loc += loss_loc.detach().item()
@@ -732,7 +739,8 @@ class E2EModel(BaseRGBModel):
                         "sum": loss.detach().item(),
                         "cls": loss_cls.detach().item(),
                         "loc": loss_loc.detach().item(),
-                        "contrast": loss_contrast.detach().item(),
+                        # "contrast": loss_contrast.detach().item(),
+                        "eventness": loss_eventness.detach().item(),
                     }
                 )
 
@@ -740,7 +748,8 @@ class E2EModel(BaseRGBModel):
             "sum": epoch_loss / len(loader),
             "cls": epoch_loss_cls / len(loader),
             "loc": epoch_loss_loc / len(loader),
-            "contrast": epoch_loss_contrast / len(loader),
+            # "contrast": epoch_loss_contrast / len(loader),
+            "eventness": epoch_loss_eventness / len(loader),
         }
 
     def predict(self, seq, use_amp=False, presence_threshold=0.0):
@@ -1201,18 +1210,18 @@ def main(args):
                             "Train loss",
                             train_loss_dict["cls"],
                             train_loss_dict["loc"],
-                            train_loss_dict["contrast"],
+                            train_loss_dict["eventness"],
                             train_loss_dict["sum"],
                         ],
                         [
                             "Val loss",
                             val_loss_dict["cls"],
                             val_loss_dict["loc"],
-                            val_loss_dict["contrast"],
+                            val_loss_dict["eventness"],
                             val_loss_dict["sum"],
                         ],
                     ],
-                    headers=[f"Epoch: {epoch}", "cls", "loc", "contrast", "sum"],
+                    headers=[f"Epoch: {epoch}", "cls", "loc", "eventness", "sum"],
                     floatfmt=".5f",
                 ),
             )
