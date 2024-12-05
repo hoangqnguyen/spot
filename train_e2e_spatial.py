@@ -552,7 +552,7 @@ class E2EModel(BaseRGBModel):
                     loc_feat = loc_feat.flip(1)
 
             eventness = self._pred_eventness(im_feat)
-            ev_feat = self._pred_fine(im_feat * eventness.sigmoid())
+            ev_feat = self._pred_fine(im_feat * eventness.detach().sigmoid())
 
             return {
                 "im_feat": ev_feat if not self.time_backward else ev_feat.flip(1),
