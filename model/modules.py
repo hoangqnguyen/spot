@@ -5,6 +5,7 @@ import torch.nn.functional as F
 
 from .common import SingleStageTCN
 from .impl.asformer import MyTransformer
+from .mamba_core import MixerModel
 
 
 class FCPrediction(nn.Module):
@@ -172,3 +173,21 @@ class ChannelAttention(nn.Module):
         y = self.fc(y)  # [B, F]
         y = y.view(B, 1, F)  # [B, 1, F]
         return x * y.expand(-1, T, -1)  # [B, T, F]
+
+
+class MambaPrediction(nn.Module):
+
+    def __init__(self, feat_dim, num_classes, hidden_dim, num_layers=1):
+        super().__init__()
+        self._core = MixerModel(
+            d_model=hidden_dim,
+            n_layer=num_layers,
+            d_intermediate=hidden_dim * 2,
+            d_in=feat_dim,
+        )
+        self._fc_out = FCPrediction(hidden_dim, num_classes)
+        self._dropout = nn.Dropout()
+
+    def forward(self, x):
+        y = self._core(x)
+        return self._fc_out(self._dropout(y))

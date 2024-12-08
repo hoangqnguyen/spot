@@ -445,21 +445,17 @@ class E2EModel(BaseRGBModel):
                 # put everything together
                 self._pred_fine = nn.Sequential(down_projection, pos_enc, encoder, fc)
 
-            elif temporal_arch == "mamba_1":
-                from mamba_ssm import Mamba
+            elif temporal_arch == "mambamixer":
+                from model.modules import MambaPrediction
 
                 hidden_dim = feat_dim
-                # down_projection = nn.Linear(feat_dim, hidden_dim)
-                mamba = Mamba(
-                    # This module uses roughly 3 * expand * d_model^2 parameters
-                    d_model=hidden_dim,  # Model dimension d_model
-                    d_state=16,  # SSM state expansion factor
-                    d_conv=4,  # Local convolution width
-                    expand=2,  # Block expansion factor
-                ).to("cuda")
+                self._pred_fine = MambaPrediction(
+                    feat_dim=feat_dim,
+                    hidden_dim=min(feat_dim * 2, MAX_GRU_HIDDEN_DIM),
+                    num_layers=3,
+                    num_classes=num_classes,
+                )
 
-                fc = MLP(hidden_dim, hidden_dim, num_classes, 3)
-                self._pred_fine = nn.Sequential(mamba, fc)
             elif temporal_arch == "bimamba":
                 from mamba_ssm import Mamba
 
