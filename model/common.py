@@ -132,6 +132,16 @@ class SingleStageTCN(nn.Module):
         x = self.conv_out(x) * m[:, 0:1, :]
         return x.permute(0, 2, 1)
 
+class SAFC(nn.Module):
+    def __init__(self, in_dim, out_dim, num_heads=4):
+        super().__init__()
+        self.mha = nn.MultiheadAttention(in_dim, num_heads, batch_first=True)
+        self.fc = nn.Linear(in_dim, out_dim)
+
+    def forward(self, x):
+        return self.fc(self.mha(x,x,x)[0])
+
+
 class MLP(nn.Module):
     """ Very simple multi-layer perceptron (also called FFN)"""
 

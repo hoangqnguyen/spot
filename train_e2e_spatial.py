@@ -18,7 +18,7 @@ import torchvision
 import timm
 from tqdm import tqdm
 
-from model.common import step, BaseRGBModel, MLP
+from model.common import step, BaseRGBModel, MLP, SAFC
 from model.shift import make_temporal_shift
 from model.modules import *
 from dataset.frame import ActionSpotDataset, ActionSpotVideoDataset
@@ -273,6 +273,7 @@ class E2EModel(BaseRGBModel):
             use_channel_attention=False,
         ):
             super().__init__()
+            self._pred_loc_arch = pred_loc_arch
             self.time_backward = time_backward
             is_rgb = modality == "rgb"
             in_channels = {"flow": 2, "bw": 1, "rgb": 3}[modality]
@@ -483,18 +484,14 @@ class E2EModel(BaseRGBModel):
             self._predict_location = predict_location
             if self._predict_location:
 
-                if pred_loc_arch == "mlp":
-                    self._pred_loc = nn.Sequential(
-                        MLP(
-                            hidden_dim,
-                            hidden_dim * 4,
-                            output_dim=2,
-                            num_layers=3,
-                        ),
-                        # nn.Linear(hidden_dim, 2),
-                    )
+                if pred_loc_arch == "fc":
+                    self._pred_loc = nn.Linear(hidden_dim, 2)
 
-                if pred_loc_arch == "smlp":
+
+                elif pred_loc_arch == "safc":
+                    self._pred_loc = SAFC(hidden_dim, 2)
+
+                elif pred_loc_arch == "mlp":
                     self._pred_loc = nn.Sequential(
                         MLP(
                             hidden_dim,
@@ -502,7 +499,7 @@ class E2EModel(BaseRGBModel):
                             output_dim=hidden_dim,
                             num_layers=2,
                         ),
-                        nn.Linear(hidden_dim, 2),
+                        # nn.Linear(hidden_dim, 2),
                     )
 
                 elif pred_loc_arch == "gmlp":
