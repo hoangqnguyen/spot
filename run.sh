@@ -1,0 +1,1 @@
+python train_e2e_spatial.py imrcvolley data/imrcvolley/frames_224p  -m rny008_gsm  -t rdfas6  --clip_len 64 --batch_size 2 --num_epochs 150 -s exp/stes_rdfas6 --predict_location --num_workers 8  | tee exp/stes_rdfas6.txt

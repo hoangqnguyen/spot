@@ -103,7 +103,7 @@ def get_args():
         "-p",
         "--pred_loc_arch",
         type=str,
-        default="smlp",
+        default="mlp",
         # choices=["mlp", "gmlp"],
     )
 
@@ -477,7 +477,15 @@ class E2EModel(BaseRGBModel):
 
                 fc = MLP(hidden_dim, hidden_dim, num_classes, 3)
                 self._pred_fine = nn.Sequential(mamba, fc)
+            elif temporal_arch == "rdfas6":
+                from model.rdfas6 import RDFAS6
 
+                hidden_dim = feat_dim
+                emb_c = 512
+                _temp_fine = RDFAS6(input_c=feat_dim, emb_c=emb_c)
+                fc = FCPrediction(emb_c, num_classes)
+
+                self._pred_fine = nn.Sequential(_temp_fine, fc)
             else:
                 raise NotImplementedError(temporal_arch)
 
@@ -486,7 +494,6 @@ class E2EModel(BaseRGBModel):
 
                 if pred_loc_arch == "fc":
                     self._pred_loc = nn.Linear(hidden_dim, 2)
-
 
                 elif pred_loc_arch == "safc":
                     self._pred_loc = SAFC(hidden_dim, 2)
@@ -499,7 +506,7 @@ class E2EModel(BaseRGBModel):
                             output_dim=hidden_dim,
                             num_layers=2,
                         ),
-                        # nn.Linear(hidden_dim, 2),
+                        nn.Linear(hidden_dim, 2),
                     )
 
                 elif pred_loc_arch == "gmlp":
@@ -632,6 +639,7 @@ class E2EModel(BaseRGBModel):
 
         self._model.to(device)
         self._num_classes = num_classes
+        self._temporal_arch = temporal_arch
 
     def epoch(
         self,
@@ -659,6 +667,12 @@ class E2EModel(BaseRGBModel):
         epoch_loss_loc = 0.0
         epoch_loss_contrast = 0.0
 
+        ctx = (
+            nullcontext()
+            if self._temporal_arch in ["rdfas6", "bimamba"]
+            else torch.cuda.amp.autocast()
+        )
+
         with torch.no_grad() if optimizer is None else nullcontext():
             pbar = tqdm(loader)
             for batch_idx, batch in enumerate(pbar):
@@ -676,11 +690,7 @@ class E2EModel(BaseRGBModel):
                     else label.view(-1, label.shape[-1])
                 )
 
-                with (
-                    torch.cuda.amp.autocast()
-                    if optimizer is not None
-                    else nullcontext()
-                ):
+                with ctx if optimizer is not None else nullcontext():
                     preds = self._model(frame)
 
                     cnn_feat = preds["cnn_feat"]
@@ -720,10 +730,6 @@ class E2EModel(BaseRGBModel):
                         loss_loc += (xy_loss * event_mask).sum() / (
                             event_mask.sum() + 1e-6
                         )
-
-                        # breakpoint if loss loc is nan
-                        if torch.isnan(loss_loc):
-                            breakpoint()
 
                     loss = loss_cls + loss_loc + loss_contrast * 0.1
 
@@ -767,9 +773,15 @@ class E2EModel(BaseRGBModel):
         if seq.device != self.device:
             seq = seq.to(self.device)
 
+        ctx = (
+            nullcontext()
+            if self._temporal_arch in ["rdfas6", "bimamba"]
+            else torch.cuda.amp.autocast()
+        )
+
         self._model.eval()
         with torch.no_grad():
-            with torch.cuda.amp.autocast() if use_amp else nullcontext():
+            with ctx if use_amp else nullcontext():
                 pred_dict = self._model(seq)
             pred_cls_score = torch.softmax(pred_dict["im_feat"], axis=2).cpu().numpy()
             pred_cls = torch.argmax(pred_dict["im_feat"], axis=2).cpu().numpy()
@@ -906,7 +918,6 @@ def evaluate(
         process_frame_predictions_with_location(dataset, classes, pred_dict)
     )
 
-    # breakpoint()
     avg_mAP_t = None
     if calc_stats:
         for fg_threshold in [0.25]:
