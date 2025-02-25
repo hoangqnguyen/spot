@@ -301,8 +301,8 @@ def non_max_suppression_events(data, tol_t):
 def compute_mAPs_with_locations(
     truth,
     pred,
-    tolerances_t=list(range(0, 6, 1)),
-    tolerances_p=list(range(0, 11, 2)),
+    tolerances_t=[0, 1, 2, 4],
+    tolerances_p=[2, 4, 6],
     plot_pr=False,
     fg_threshold=0.25,
     px_scale=224,

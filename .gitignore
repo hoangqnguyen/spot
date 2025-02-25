@@ -19,6 +19,4 @@ demo_create.py
 .idea/vcs.xml
 .idea/inspectionProfiles/profiles_settings.xml
 .idea/.gitignore
-data/imrc*
-data/vnl*
-data/imrcvolley
+data/
