@@ -100,7 +100,8 @@ class VideoFrameSlidingDataset(torch.utils.data.Dataset):
             print(f"Total frames in list: {self.num_frames}")
         elif self.mode == "mp4":
             self.video_path = input_data
-            video, _, _ = read_video(self.video_path, pts_unit="sec")
+            video, _, meta = read_video(self.video_path, pts_unit="sec")
+            self.fps = meta["video_fps"]
             self.frames = video.permute(0, 3, 1, 2)  # Convert to (T, C, H, W)
             self.num_frames = self.frames.size(0)
             print(f"Video path: {self.video_path}, Total frames: {self.num_frames}")

@@ -20,3 +20,4 @@ demo_create.py
 .idea/inspectionProfiles/profiles_settings.xml
 .idea/.gitignore
 data/
+.gradio
