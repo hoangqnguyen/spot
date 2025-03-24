@@ -343,7 +343,7 @@ if __name__ == "__main__":
 
     # Set up a Blocks interface with states and buttons
     with Blocks() as demo:
-        gr.Markdown("# Video Event Detection")
+        gr.Markdown("# Spatio-Temporal Event Spotting in Volleyball Videos")
         gr.Markdown(
             "Upload a video clip and click 'Detect Events' to analyze events in your video."
         )
@@ -390,4 +390,4 @@ if __name__ == "__main__":
             render_results, inputs=[video_state, results_state], outputs=rendered_video
         )
 
-    demo.launch()
+    demo.launch(server_name="0.0.0.0", share=True, pwa=True)
