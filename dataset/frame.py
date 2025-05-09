@@ -44,7 +44,8 @@ class FrameReader:
                 continue
 
             frame_path = os.path.join(
-                self._frame_dir, video_name, FrameReader.IMG_NAME.format(frame_num)
+                self._frame_dir, video_name, FrameReader.IMG_NAME.format(
+                    frame_num)
             )
             try:
                 img = self.read_frame(frame_path)
@@ -107,7 +108,8 @@ def _get_img_transforms(crop_dim=224, is_eval=False):
 
     img_transforms = [
         # ColorJittering
-        transforms.RandomApply(nn.ModuleList([transforms.ColorJitter(hue=0.2)]), p=p),
+        transforms.RandomApply(nn.ModuleList(
+            [transforms.ColorJitter(hue=0.2)]), p=p),
         transforms.RandomApply(
             nn.ModuleList([transforms.ColorJitter(saturation=(0.7, 1.2))]), p=p
         ),
@@ -117,7 +119,8 @@ def _get_img_transforms(crop_dim=224, is_eval=False):
         transforms.RandomApply(
             nn.ModuleList([transforms.ColorJitter(contrast=(0.7, 1.2))]), p=p
         ),
-        transforms.RandomApply(nn.ModuleList([transforms.GaussianBlur(5)]), p=p),
+        transforms.RandomApply(nn.ModuleList(
+            [transforms.GaussianBlur(5)]), p=p),
         transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
     ]
     # return transforms.Compose(geometric_transforms + img_transforms)
@@ -126,10 +129,12 @@ def _get_img_transforms(crop_dim=224, is_eval=False):
         [
             transforms.Lambda(lambda img: check_for_nan(img, "Initial")),
             *geometric_transforms,
-            transforms.Lambda(lambda img: check_for_nan(img, "Geometric Transforms")),
+            transforms.Lambda(lambda img: check_for_nan(
+                img, "Geometric Transforms")),
             *img_transforms,
             transforms.Lambda(
-                lambda img: check_for_nan(img, "Color Jittering and Normalization")
+                lambda img: check_for_nan(
+                    img, "Color Jittering and Normalization")
             ),
         ]
     )
@@ -209,12 +214,14 @@ class ActionSpotDataset(Dataset):
         self._frame_reader = FrameReader(frame_dir, modality)
 
     def _sample_uniform(self):
-        video_meta = random.choices(self._labels, weights=self._weights_by_length)[0]
+        video_meta = random.choices(
+            self._labels, weights=self._weights_by_length)[0]
 
         video_len = video_meta["num_frames"]
         base_idx = -self._pad_len * self._stride + random.randint(
             0,
-            max(0, video_len - 1 + (2 * self._pad_len - self._clip_len) * self._stride),
+            max(0, video_len - 1 + (2 * self._pad_len -
+                self._clip_len) * self._stride),
         )
         return video_meta, base_idx
 
@@ -227,7 +234,8 @@ class ActionSpotDataset(Dataset):
             -self._pad_len * self._stride, frame_idx - self._clip_len * self._stride + 1
         )
         upper_bound = min(
-            video_len - 1 + (self._pad_len - self._clip_len) * self._stride, frame_idx
+            video_len - 1 + (self._pad_len - self._clip_len) *
+            self._stride, frame_idx
         )
 
         base_idx = (
@@ -249,7 +257,7 @@ class ActionSpotDataset(Dataset):
         labels = np.zeros(self._clip_len, np.int64)
         event_xys = (
             np.zeros((self._clip_len, 2), np.float32)
-            if "kovo" in self._dataset or "imrcvolley" in self._dataset
+            if "kovo" in self._dataset or "imrcvolley" in self._dataset or "vnl" in self._dataset
             else None
         )
 
@@ -328,7 +336,8 @@ class ActionSpotDataset(Dataset):
                 ret["mix_frame"] = mix["frame"]
                 ret["mix_weight"] = l
 
-            ret["contains_event"] = max(ret["contains_event"], mix["contains_event"])
+            ret["contains_event"] = max(
+                ret["contains_event"], mix["contains_event"])
             ret["label"] = label_dist
 
         return ret
@@ -385,7 +394,8 @@ class ActionSpotVideoDataset(Dataset):
             for i in range(
                 -pad_len * self._stride,
                 max(
-                    0, l["num_frames"] - (overlap_len * stride) * int(skip_partial_end)
+                    0, l["num_frames"] -
+                    (overlap_len * stride) * int(skip_partial_end)
                 ),  # Need to ensure that all clips have at least one frame
                 (clip_len - overlap_len) * self._stride,
             ):
@@ -447,7 +457,8 @@ class ActionSpotVideoDataset(Dataset):
     def videos(self):
         return sorted(
             [
-                (v["video"], v["num_frames"] // self._stride, v["fps"] / self._stride)
+                (v["video"], v["num_frames"] //
+                 self._stride, v["fps"] / self._stride)
                 for v in self._labels
             ]
         )

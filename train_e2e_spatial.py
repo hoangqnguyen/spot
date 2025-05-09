@@ -1,6 +1,25 @@
 #!/usr/bin/env python3
 """ Training for E2E-Spot """
 
+from torchvision.ops.focal_loss import sigmoid_focal_loss
+from util.score import compute_mAPs, compute_mAPs_with_locations
+from util.dataset import DATASETS, load_classes
+from util.io import load_json, store_json, store_gz_json, clear_files
+from util.eval import (
+    process_frame_predictions_with_location,
+    process_frame_predictions_with_location,
+)
+from dataset.frame import ActionSpotDataset, ActionSpotVideoDataset
+from model.modules import *
+from model.shift import make_temporal_shift
+from model.common import step, BaseRGBModel, MLP, SAFC
+from tqdm import tqdm
+import timm
+import torchvision
+from torch.utils.data import DataLoader
+from torch.optim.lr_scheduler import ChainedScheduler, LinearLR, CosineAnnealingLR
+import torch.nn.functional as F
+import torch.nn as nn
 import os
 import argparse
 from contextlib import nullcontext
@@ -8,28 +27,9 @@ import random
 import numpy as np
 from tabulate import tabulate
 import torch
+import wandb # Add wandb import
 
 torch.backends.cudnn.benchmark = True
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.optim.lr_scheduler import ChainedScheduler, LinearLR, CosineAnnealingLR
-from torch.utils.data import DataLoader
-import torchvision
-import timm
-from tqdm import tqdm
-
-from model.common import step, BaseRGBModel, MLP, SAFC
-from model.shift import make_temporal_shift
-from model.modules import *
-from dataset.frame import ActionSpotDataset, ActionSpotVideoDataset
-from util.eval import (
-    process_frame_predictions_with_location,
-    process_frame_predictions_with_location,
-)
-from util.io import load_json, store_json, store_gz_json, clear_files
-from util.dataset import DATASETS, load_classes
-from util.score import compute_mAPs, compute_mAPs_with_locations
-from torchvision.ops.focal_loss import sigmoid_focal_loss
 
 
 EPOCH_NUM_FRAMES = 500000
@@ -189,7 +189,8 @@ def get_args():
     parser.add_argument("--time_backward", action="store_true")
 
     # Eval mode
-    parser.add_argument("--eval_only", action="store_true", help="As the name suggests")
+    parser.add_argument("--eval_only", action="store_true",
+                        help="As the name suggests")
     parser.add_argument("--eval_split", type=str, default="test")
 
     parser.add_argument(
@@ -197,6 +198,12 @@ def get_args():
         type=str,
         required=False,
         help="Path of checkpoint for eval",
+    )
+    parser.add_argument(
+        "--wandb_project",
+        type=str,
+        default="spot",
+        help="Name of the W&B project."
     )
 
     return parser.parse_args()
@@ -244,7 +251,8 @@ def calculate_loss_contrast(im_feat, labels):
     bg_feat = im_feat[~fg_mask]
 
     # Calculate the delta (difference) between foreground and background features
-    delta = torch.norm(fg_feat.unsqueeze(1) - bg_feat.unsqueeze(0), dim=-1).mean()
+    delta = torch.norm(fg_feat.unsqueeze(
+        1) - bg_feat.unsqueeze(0), dim=-1).mean()
 
     # Compute the loss contrast
     loss_contrast = 1 / (delta.mean() + 1e-6)
@@ -281,8 +289,10 @@ class E2EModel(BaseRGBModel):
             self._use_channel_attention = use_channel_attention
 
             if feature_arch.startswith(("rn18", "rn50")):
-                resnet_name = feature_arch.split("_")[0].replace("rn", "resnet")
-                features = getattr(torchvision.models, resnet_name)(pretrained=is_rgb)
+                resnet_name = feature_arch.split(
+                    "_")[0].replace("rn", "resnet")
+                features = getattr(torchvision.models, resnet_name)(
+                    pretrained=is_rgb)
                 feat_dim = features.fc.in_features
                 features.fc = nn.Identity()
                 # import torchsummary
@@ -331,7 +341,8 @@ class E2EModel(BaseRGBModel):
                 features.classifier = nn.Identity()
 
             elif "convnextt" in feature_arch:
-                features = timm.create_model("convnext_tiny", pretrained=is_rgb)
+                features = timm.create_model(
+                    "convnext_tiny", pretrained=is_rgb)
                 feat_dim = features.head.fc.in_features
                 features.head.fc = nn.Identity()
 
@@ -346,7 +357,8 @@ class E2EModel(BaseRGBModel):
             if self._use_channel_attention:
                 from model.modules import ChannelAttention
 
-                self._channel_attention = ChannelAttention(feat_dim, reduction=8)
+                self._channel_attention = ChannelAttention(
+                    feat_dim, reduction=8)
 
             else:
                 self._channel_attention = nn.Identity()
@@ -367,7 +379,8 @@ class E2EModel(BaseRGBModel):
                 if hidden_dim > MAX_GRU_HIDDEN_DIM:
                     hidden_dim = MAX_GRU_HIDDEN_DIM
                     print(
-                        "Clamped GRU hidden dim: {} -> {}".format(feat_dim, hidden_dim)
+                        "Clamped GRU hidden dim: {} -> {}".format(
+                            feat_dim, hidden_dim)
                     )
                 if temporal_arch in ("gru", "deeper_gru"):
                     self._pred_fine = GRUPrediction(
@@ -441,10 +454,12 @@ class E2EModel(BaseRGBModel):
                     attn_dropout=0.1,  # dropout post-attention
                     ff_dropout=0.1,  # feedforward dropout
                 )  # encoder-only transformer
-                fc = MLP(hidden_dim, hidden_dim, num_classes, 3)  # final classifier
+                # final classifier
+                fc = MLP(hidden_dim, hidden_dim, num_classes, 3)
 
                 # put everything together
-                self._pred_fine = nn.Sequential(down_projection, pos_enc, encoder, fc)
+                self._pred_fine = nn.Sequential(
+                    down_projection, pos_enc, encoder, fc)
 
             elif temporal_arch == "mamba_1":
                 from mamba_ssm import Mamba
@@ -555,7 +570,8 @@ class E2EModel(BaseRGBModel):
                     true_clip_len <= self._require_clip_len
                 ), "Expected {}, got {}".format(self._require_clip_len, true_clip_len)
                 if true_clip_len < self._require_clip_len:
-                    x = F.pad(x, (0,) * 7 + (self._require_clip_len - true_clip_len,))
+                    x = F.pad(x, (0,) * 7 +
+                              (self._require_clip_len - true_clip_len,))
                     clip_len = self._require_clip_len
             im_feat = self._features(x.view(-1, channels, height, width))
 
@@ -584,7 +600,8 @@ class E2EModel(BaseRGBModel):
             }
 
         def print_stats(self):
-            print(f"Model params:{sum(p.numel() for p in self.parameters()):,}")
+            print(
+                f"Model params:{sum(p.numel() for p in self.parameters()):,}")
             print(
                 f"CNN features:{sum(p.numel() for p in self._features.parameters()):,}"
             )
@@ -681,7 +698,8 @@ class E2EModel(BaseRGBModel):
                 label = batch["label"].to(self.device)
 
                 if self._model._predict_location:
-                    target_xy = batch["xy"].to(self.device).reshape(-1, 2)  # B*T, 2
+                    target_xy = batch["xy"].to(
+                        self.device).reshape(-1, 2)  # B*T, 2
 
                 # Depends on whether mixup is used
                 label = (
@@ -783,7 +801,8 @@ class E2EModel(BaseRGBModel):
         with torch.no_grad():
             with ctx if use_amp else nullcontext():
                 pred_dict = self._model(seq)
-            pred_cls_score = torch.softmax(pred_dict["im_feat"], axis=2).cpu().numpy()
+            pred_cls_score = torch.softmax(
+                pred_dict["im_feat"], axis=2).cpu().numpy()
             pred_cls = torch.argmax(pred_dict["im_feat"], axis=2).cpu().numpy()
             if self._model._predict_location:
                 pred_loc = (
@@ -819,7 +838,8 @@ def evaluate(
                 (video_len, len(classes) + 1), np.float32
             ),  # Stores scores for each class
             np.zeros(video_len, np.int32),  # Stores support (number of frames)
-            np.zeros((video_len, 2), np.float32),  # Stores location predictions (x, y)
+            # Stores location predictions (x, y)
+            np.zeros((video_len, 2), np.float32),
         )
 
     # Determine batch size based on whether the dataset is augmented
@@ -838,7 +858,8 @@ def evaluate(
             # When batch size is greater than 1 (batched by dataloader)
             if predict_location:
                 # Predict scores and locations if location prediction is enabled
-                _, batch_pred_scores, batch_pred_loc = model.predict(clip["frame"])
+                _, batch_pred_scores, batch_pred_loc = model.predict(
+                    clip["frame"])
 
                 batch_pred_loc = batch_pred_loc.reshape(
                     batch_pred_scores.shape[0], -1, 2
@@ -907,8 +928,10 @@ def evaluate(
                 if predict_location:
                     pred_loc = pred_loc[:, : end - start, :]
 
-            scores[start:end, :] += np.sum(pred_scores, axis=0)  # Accumulate scores
-            support[start:end] += pred_scores.shape[0]  # Increment the support count
+            # Accumulate scores
+            scores[start:end, :] += np.sum(pred_scores, axis=0)
+            # Increment the support count
+            support[start:end] += pred_scores.shape[0]
             if predict_location:
                 # fg_mask = np.argmax(pred_scores, axis=-1) > 0
                 locations[start:end, :] = pred_loc
@@ -923,7 +946,8 @@ def evaluate(
         for fg_threshold in [0.25]:
             # Print the evaluation results
             # print("=== Results on {} (w/o NMS) ===".format(split))
-            print("=== Results on {} (FG_THRES={:.2f}) ===".format(split, fg_threshold))
+            print("=== Results on {} (FG_THRES={:.2f}) ===".format(
+                split, fg_threshold))
             print("Error (frame-level): {:0.2f}\n".format(err.get() * 100))
 
             def get_f1_tab_row(str_k):
@@ -954,8 +978,10 @@ def evaluate(
             avg_mAP_s = np.mean(mAPs_p)
 
             # hamornic mean
-            avg_mAP = 2 * avg_mAP_t * avg_mAP_s / (avg_mAP_t + avg_mAP_s + 1e-6)
-            print("Harmonic mean (temporal and spatial mAPs): {:0.2%}".format(avg_mAP))
+            avg_mAP = 2 * avg_mAP_t * avg_mAP_s / \
+                (avg_mAP_t + avg_mAP_s + 1e-6)
+            print(
+                "Harmonic mean (temporal and spatial mAPs): {:0.2%}".format(avg_mAP))
 
     if save_pred is not None:
         os.makedirs(os.path.dirname(save_pred), exist_ok=True)
@@ -1056,7 +1082,8 @@ def load_from_save(args, model, optimizer, scaler, lr_scheduler):
 
     print("Loading from epoch {}".format(epoch))
     model.load(
-        torch.load(os.path.join(args.save_dir, "checkpoint_{:03d}.pt".format(epoch)))
+        torch.load(os.path.join(args.save_dir,
+                   "checkpoint_{:03d}.pt".format(epoch)))
     )
 
     if args.resume:
@@ -1143,6 +1170,8 @@ def main(args):
         if args.crop_dim <= 0:
             args.crop_dim = None
 
+    wandb.init(project=args.wandb_project, config=args) # Initialize wandb
+
     _data = get_datasets(args)
     classes = _data[0]
 
@@ -1176,7 +1205,7 @@ def main(args):
             batch_size=loader_batch_size,
             pin_memory=True,
             num_workers=get_num_train_workers(args),
-            prefetch_factor=1,
+            prefetch_factor=1 if args.num_workers > 0 else None,
             worker_init_fn=worker_init_fn,
         )
         val_loader = DataLoader(
@@ -1219,7 +1248,8 @@ def main(args):
                 lr_scheduler=lr_scheduler,
                 acc_grad_iter=args.acc_grad_iter,
             )
-            val_loss_dict = model.epoch(val_loader, acc_grad_iter=args.acc_grad_iter)
+            val_loss_dict = model.epoch(
+                val_loader, acc_grad_iter=args.acc_grad_iter)
 
             print(
                 "\n",
@@ -1240,7 +1270,8 @@ def main(args):
                             val_loss_dict["sum"],
                         ],
                     ],
-                    headers=[f"Epoch: {epoch}", "cls", "loc", "contrast", "sum"],
+                    headers=[f"Epoch: {epoch}", "cls",
+                             "loc", "contrast", "sum"],
                     floatfmt=".5f",
                 ),
             )
@@ -1285,12 +1316,14 @@ def main(args):
             )
             if args.save_dir is not None:
                 os.makedirs(args.save_dir, exist_ok=True)
+                wandb.log({ "epoch": epoch, "train_loss": train_loss_dict["sum"], "val_loss": val_loss_dict["sum"], "val_mAP": val_mAP }) # Log metrics to wandb
                 store_json(
                     os.path.join(args.save_dir, "loss.json"), losses, pretty=True
                 )
                 torch.save(
                     model.state_dict(),
-                    os.path.join(args.save_dir, "checkpoint_{:03d}.pt".format(epoch)),
+                    os.path.join(
+                        args.save_dir, "checkpoint_{:03d}.pt".format(epoch)),
                 )
                 clear_files(args.save_dir, r"optim_\d+\.pt")
                 torch.save(
@@ -1299,7 +1332,8 @@ def main(args):
                         "scaler_state_dict": scaler.state_dict(),
                         "lr_state_dict": lr_scheduler.state_dict(),
                     },
-                    os.path.join(args.save_dir, "optim_{:03d}.pt".format(epoch)),
+                    os.path.join(
+                        args.save_dir, "optim_{:03d}.pt".format(epoch)),
                 )
                 store_config(
                     os.path.join(args.save_dir, "config.json"),
@@ -1314,7 +1348,8 @@ def main(args):
             model.load(
                 torch.load(
                     os.path.join(
-                        args.save_dir, "checkpoint_{:03d}.pt".format(best_epoch)
+                        args.save_dir, "checkpoint_{:03d}.pt".format(
+                            best_epoch)
                     )
                 )
             )
@@ -1329,7 +1364,8 @@ def main(args):
     # Evaluate on hold out splits
     eval_splits += [args.eval_split, "challenge"]
     for split in eval_splits:
-        split_path = os.path.join("data", args.dataset, "{}.json".format(split))
+        split_path = os.path.join(
+            "data", args.dataset, "{}.json".format(split))
         if os.path.exists(split_path):
             split_data = ActionSpotVideoDataset(
                 classes,
