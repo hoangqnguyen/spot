@@ -446,7 +446,29 @@ def get_best_epoch_and_history(save_dir, criterion):
 
 
 def get_datasets(args):
-    classes = load_classes(os.path.join('data', args.dataset, 'class.txt'))
+    # Prefer explicit class file; if missing, derive classes from train.json
+    # (also support `data/<dataset>/volli_dataset_json/train.json`).
+    base_dir = os.path.join('data', args.dataset)
+    class_file = os.path.join(base_dir, 'class.txt')
+    if os.path.exists(class_file):
+        classes = load_classes(class_file)
+    else:
+        candidate = os.path.join(base_dir, 'train.json')
+        alt_candidate = os.path.join(base_dir, 'volli_dataset_json', 'train.json')
+        chosen = candidate if os.path.exists(candidate) else (
+            alt_candidate if os.path.exists(alt_candidate) else None
+        )
+        if chosen is None:
+            raise FileNotFoundError(
+                f"Missing class.txt and no train.json found for dataset {args.dataset}"
+            )
+        data = load_json(chosen)
+        labels = set()
+        for vid in data:
+            for ev in vid.get('events', []):
+                labels.add(ev['label'])
+        labels = sorted(labels)
+        classes = {x: i + 1 for i, x in enumerate(labels)}
 
     dataset_len = EPOCH_NUM_FRAMES // args.clip_len
     dataset_kwargs = {

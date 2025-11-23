@@ -257,7 +257,12 @@ class ActionSpotDataset(Dataset):
         labels = np.zeros(self._clip_len, np.int64)
         event_xys = (
             np.zeros((self._clip_len, 2), np.float32)
-            if "kovo" in self._dataset or "imrcvolley" in self._dataset or "vnl" in self._dataset
+            if (
+                "kovo" in self._dataset
+                or "imrcvolley" in self._dataset
+                or "vnl" in self._dataset
+                or "hogak" in self._dataset
+            )
             else None
         )
 
@@ -291,24 +296,32 @@ class ActionSpotDataset(Dataset):
 
         if self._transform is not None:
             h, w = frames.shape[-2:]
-            scale = torch.tensor([w, h]).reshape(1, 2)
-            in_boxes = torch.from_numpy(event_xys) * scale  # T, 2
-            in_boxes = in_boxes.repeat((1, 2))  # T, 4
-
-            in_boxes = tv_tensors.BoundingBoxes(
-                in_boxes, format="XYXY", canvas_size=frames.shape[-2:]
-            )
-
             # create a nan vector
             out_frames = torch.zeros(1) / 0.0
-            while out_frames.isnan().any():
-                # its a trick if some transformation messes up the image we try again. luckily it happens very rarely
-                out_frames, out_boxes = self._transform(frames, in_boxes)
+            if event_xys is not None:
+                scale = torch.tensor([w, h]).reshape(1, 2).to(torch.float32)
+                # ensure numpy -> float32 tensor to avoid dtype issues
+                in_boxes = torch.from_numpy(event_xys.astype("float32")) * scale  # T, 2
+                in_boxes = in_boxes.repeat((1, 2))  # T, 4
 
-            frames = out_frames
-            event_xys = out_boxes.data[:, :2] / torch.tensor(
-                [self._crop_dim, self._crop_dim]
-            ).reshape(1, 2)
+                canvas_size = (int(h), int(w))
+                in_boxes = tv_tensors.BoundingBoxes(
+                    in_boxes, format="XYXY", canvas_size=canvas_size
+                )
+
+                while out_frames.isnan().any():
+                    # if some transformation messes up the image we try again
+                    out_frames, out_boxes = self._transform(frames, in_boxes)
+
+                frames = out_frames
+                event_xys = out_boxes.data[:, :2] / torch.tensor(
+                    [self._crop_dim, self._crop_dim]
+                ).reshape(1, 2)
+            else:
+                # No boxes available: run transforms on frames only
+                while out_frames.isnan().any():
+                    out_frames = self._transform(frames)
+                frames = out_frames
 
         return {
             "video": video_meta["video"],
