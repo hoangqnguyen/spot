@@ -265,6 +265,28 @@ class E2EModel(BaseRGBModel):
     class Impl(nn.Module):
 
         def __init__(
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
             self,
             num_classes,
             feature_arch,
@@ -280,6 +302,63 @@ class E2EModel(BaseRGBModel):
             time_backward=False,
             use_channel_attention=False,
         ):
+            
+
+            """
+            Initializes the end-to-end spatial model.
+
+            This constructor sets up the feature extraction backbone, temporal modeling head,
+            and optionally, a location prediction head. It supports various architectures
+            for both feature extraction and temporal modeling.
+
+            Args:
+                num_classes (int): Number of classes for the final classification.
+                feature_arch (str): Architecture for the feature extractor.
+                    Supported: "rn18", "rn50" (ResNet variants),
+                               "rny002", "rny008" (RegNetY variants),
+                               "convnextt", "convnextt2" (ConvNeXt variants).
+                    Suffixes "_tsm" or "_gsm" can be added to enable Temporal Shift
+                    Modules or Gated Shift Modules, respectively.
+                temporal_arch (str): Architecture for the temporal modeling head.
+                    Supported: "gru", "deeper_gru", "mingru" (GRU variants),
+                               "mstcn" (Multi-Stage Temporal Convolutional Network),
+                               "asformer" (Action Segment Transformer),
+                               "" (simple Fully Connected layer),
+                               "gmlp" (gMLP network),
+                               "transformer_enc_only_base_11m" (Transformer Encoder),
+                               "mamba_1" (Mamba state space model),
+                               "bimamba" (Bidirectional Mamba),
+                               "rdfas6" (RDFAS6 model).
+                clip_len (int): Length of the input video clips (number of frames).
+                modality (str): Input data modality.
+                    Supported: "rgb", "flow", "bw" (black & white).
+                predict_location (bool, optional): If True, a location prediction
+                    head is added. Defaults to False.
+                pred_loc_arch (str, optional): Architecture for the location
+                    prediction head if `predict_location` is True.
+                    Supported: "fc" (Fully Connected), "safc" (Self-Attention FC),
+                               "mlp" (Multi-Layer Perceptron), "gmlp" (gMLP network).
+                    Defaults to "mlp".
+                temp_gmlp_layers (int, optional): Number of gMLP blocks for the
+                    temporal gMLP head. Defaults to 2.
+                loc_gmlp_layers (int, optional): Number of gMLP blocks for the
+                    location prediction gMLP head. Defaults to 2.
+                tgmlp_attn_dim (int, optional): Attention dimension for the
+                    temporal gMLP blocks. If None, standard gMLP is used.
+                    Defaults to None.
+                lgmlp_attn_dim (int, optional): Attention dimension for the
+                    location prediction gMLP blocks. If None, standard gMLP is used.
+                    Defaults to None.
+                time_backward (bool, optional): If True, processes temporal sequences
+                    in reverse for models like GRU. Defaults to False.
+                use_channel_attention (bool, optional): If True, adds a channel
+                    attention module after the feature extractor. Defaults to False.
+
+            Raises:
+                NotImplementedError: If an unsupported `feature_arch`,
+                    `temporal_arch`, or `pred_loc_arch` is provided.
+            """
+            
             super().__init__()
             self._pred_loc_arch = pred_loc_arch
             self.time_backward = time_backward
