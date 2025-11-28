@@ -1,4 +1,5 @@
 import os
+import argparse
 import cv2
 import glob
 import math
@@ -15,7 +16,7 @@ from easydict import EasyDict as edict
 from torch.utils.data import Dataset, DataLoader
 
 # custom modules
-from util.io import store_json
+from util.io import store_json, load_json
 from train_e2e_spatial import E2EModel
 from util.score import (
     filter_events_by_score,
@@ -41,7 +42,8 @@ def get_args(**overrides):
         gpu_parallel=False,
         debug_only=False,
         # classes="serve receive set spike dig block".split(),
-        classes="serve receive set spike block score".split(),
+        # classes="serve receive set spike block score".split(),
+        classes="block dig net pass receive score serve set spike".split(),
         num_videos=None,
     )
     args.update(overrides)
@@ -100,10 +102,12 @@ class VideoFrameSlidingDataset(torch.utils.data.Dataset):
             print(f"Total frames in list: {self.num_frames}")
         elif self.mode == "mp4":
             self.video_path = input_data
-            video, _, meta = read_video(self.video_path, pts_unit="sec")
-            self.fps = meta["video_fps"]
-            self.frames = video.permute(0, 3, 1, 2)  # Convert to (T, C, H, W)
-            self.num_frames = self.frames.size(0)
+            # Use cv2 for lazy loading to save memory
+            cap = cv2.VideoCapture(self.video_path)
+            self.fps = cap.get(cv2.CAP_PROP_FPS)
+            self.num_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            cap.release()
+            self.cap = None  # Initialize as None, created in worker
             print(f"Video path: {self.video_path}, Total frames: {self.num_frames}")
 
         else:
@@ -113,19 +117,15 @@ class VideoFrameSlidingDataset(torch.utils.data.Dataset):
     def videos(self):
         return [(self.video_path, self.num_frames)]
 
-    def _get_frame_from_video(self, idx):
-        """Retrieve a frame directly from the loaded video tensor."""
-        if idx < self.num_frames:
-            frame = self.frames[idx]
-            org_size = (frame.shape[2], frame.shape[1])  # (Width, Height)
-            return frame, org_size
-        else:
-            raise KeyError(f"Frame at index {idx} could not be loaded into buffer.")
-
     def _load_sequence(self, start_idx):
         """Load a sequence of frames starting from `start_idx`."""
         frames = []
         org_sizes = []
+
+        if self.mode == "mp4":
+            if self.cap is None:
+                self.cap = cv2.VideoCapture(self.video_path)
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, start_idx)
 
         for i in range(self.window_size):
             actual_idx = start_idx + i
@@ -137,17 +137,32 @@ class VideoFrameSlidingDataset(torch.utils.data.Dataset):
                     )  # Convert to tensor
                     org_size = (frame.shape[2], frame.shape[1])  # (Width, Height)
                 elif self.mode == "mp4":
-                    # Load frame from video tensor
-                    frame, org_size = self._get_frame_from_video(actual_idx)
+                    # Load frame from video using cv2
+                    ret, frame = self.cap.read()
+                    if not ret:
+                        # Should not happen if num_frames is correct
+                        raise RuntimeError(
+                            f"Failed to read frame {actual_idx} from {self.video_path}"
+                        )
+
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    frame = torch.from_numpy(frame)  # (H, W, C)
+                    org_size = (frame.shape[1], frame.shape[0])  # (Width, Height)
+                    frame = frame.permute(2, 0, 1)  # (C, H, W)
                 else:
                     raise ValueError(f"Unsupported mode: {self.mode}")
             else:
                 # Zero-padding if not enough frames
+                if not org_sizes:
+                    raise RuntimeError(
+                        "Padding requested but no previous frames to determine size."
+                    )
+                last_org_size = org_sizes[-1]
                 frame = torch.zeros(
-                    (3, org_size[1], org_size[0]),
+                    (3, last_org_size[1], last_org_size[0]),
                     dtype=torch.float,
                 )
-                org_size = (frame.shape[2], frame.shape[1])
+                org_size = last_org_size
 
             frames.append(frame)
             org_sizes.append(org_size)
@@ -261,50 +276,286 @@ def run_inference(model, dataloader, classes, pred_file, postprocess=False):
     print(f"Saved predictions to {pred_file}")
     return pred_events
 
+def render_video(
+    video_file,
+    events,
+    freeze_frames=25,
+    main_color=(242, 243, 244),
+    out_width=1280,
+    out_height=720,
+):
 
-if __name__ == "__main__":
-    # Set the arguments for inference
-    args = get_args(
-        video_mp4="/home/hoang/demo.mp4",
-        resize=(224, 224),
-        clip_len=64,
-        checkpoint_path="exp/best/gru_r8g_newlabeloct01_checkpoint_125.pt",
-        save_dir="exp/demo1",
-        batch_size=16,
+    event_by_frame = {x["frame"]: x for x in events}
+    if video_file.endswith(".mp4"):
+        output_video_file = video_file.replace(".mp4", "_output.mp4")
+    elif video_file.endswith(".MP4"):
+        output_video_file = video_file.replace(".MP4", "_output.mp4")
+    else:
+        raise ValueError(f"Unsupported video format: {video_file}")
+
+    # Use cv2 for video reading and writing to save memory
+    cap = cv2.VideoCapture(video_file)
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    # Define the codec and create VideoWriter object
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    out = cv2.VideoWriter(output_video_file, fourcc, fps, (out_width, out_height))
+
+    for idx in tqdm(range(total_frames), desc="Rendering video"):
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        if idx not in event_by_frame:
+            # Resize if needed
+            if out_width != width or out_height != height:
+                frame = cv2.resize(frame, (out_width, out_height))
+            out.write(frame)
+        else:
+            event = event_by_frame[idx]
+            x, y = int(event["xy"][0] * width), int(event["xy"][1] * height)
+            score = event["score"]
+            label = event["label"]
+            text = f"{label.upper()} {score:.0%}"
+
+            for it in range(freeze_frames):
+                dt = it / freeze_frames
+                canvas = frame.copy()
+
+                draw_filled_parallelogram(text, (x, y), canvas, dt)
+
+                alpha = max(0.9, 0.65 + 0.25 * dt)
+                canvas = cv2.addWeighted(frame, 1 - alpha, canvas, alpha, 0)
+
+                radius = 10 + 40 * ((1 - dt) ** 8)
+                thickness = 1 + dt * 2
+                cv2.circle(
+                    canvas,
+                    (x, y),
+                    int(radius),
+                    main_color,
+                    int(thickness),
+                    lineType=cv2.LINE_AA,
+                )
+                
+                # Resize if needed
+                if out_width != width or out_height != height:
+                    canvas = cv2.resize(canvas, (out_width, out_height))
+                out.write(canvas)
+
+    cap.release()
+    out.release()
+
+    return output_video_file
+
+
+def draw_filled_parallelogram(text, center_coordinates, image, dt):
+    # Initial parameters
+    radius = 10
+    color = (255, 255, 255)  # White color in BGR
+    circle_thickness = 1  # Solid circle
+    delta_shadow = np.array([3, 3])
+    color_shadow = (57, 61, 71)  # Black color for the shadow
+    color_text = (0, 0, 0)  # Black color for the text
+
+    # Text and padding
+    font_scale = 0.7
+    font_thickness = 1
+    # font = cv2.FONT_HERSHEY_SIMPLEX
+    font = cv2.FONT_HERSHEY_COMPLEX
+    text_size = cv2.getTextSize(text, font, font_scale, font_thickness)[0]
+
+    left_padding = 7
+    right_padding = 20
+    top_padding = 12
+    bottom_padding = 7
+
+    # Adjust the length of the parallelogram based on the text size and padding
+    parallelogram_length = text_size[0] + left_padding + right_padding
+    parallelogram_height = text_size[1] + top_padding + bottom_padding
+
+    # Define angle for the 60-degree line
+    angle = np.pi / 3  # 60 degrees in radians
+    positive_angle = 2 * np.pi / 3  # 120 degrees in radians
+
+    # Calculate the 60-degree line points
+    start_point = center_coordinates
+    end_point = (
+        int(center_coordinates[0] + 100 * np.cos(angle)),
+        int(center_coordinates[1] - 100 * np.sin(angle)),
     )
 
-    args.pred_file = os.path.join(args.save_dir, "predictions.json")
+    # Calculate the points of the parallelogram, with the first point being below the 60-degree line
+    gap = 5
+    point1 = (end_point[0] + gap, end_point[1] + gap)  # Below the 60-degree line
+    point2 = (
+        int(point1[0] + parallelogram_length),
+        point1[1],
+    )  # Move horizontally (parallel to horizontal line)
+    point3 = (
+        int(point2[0] + parallelogram_height * np.cos(positive_angle)),
+        int(point2[1] + parallelogram_height * np.sin(positive_angle)),
+    )  # Adjusted to 120 degrees
+    point4 = (
+        int(point1[0] + parallelogram_height * np.cos(positive_angle)),
+        int(point1[1] + parallelogram_height * np.sin(positive_angle)),
+    )  # Adjusted to 120 degrees
+
+    # Draw the white dot with radius 10
+    cv2.circle(
+        image,
+        center_coordinates,
+        radius,
+        color,
+        circle_thickness,
+        lineType=cv2.LINE_AA,
+    )
+
+    # Draw the 60-degree line
+    end_point_ = np.add(
+        start_point, np.subtract(end_point, center_coordinates) * min(1.0, dt * 4)
+    ).astype(np.int32)
+
+    start_point_shadow = np.add(start_point, delta_shadow * 0.5).astype(np.int32)
+    end_point_shadow = np.add(end_point_, delta_shadow * 0.5).astype(np.int32)
+
+    cv2.line(
+        image,
+        start_point_shadow,
+        end_point_shadow,
+        color_shadow,  # Black color for the shadow
+        thickness=2,
+        lineType=cv2.LINE_AA,
+    )
+
+    cv2.line(image, start_point, end_point_, color, thickness=2, lineType=cv2.LINE_AA)
+
+    # Draw the horizontal line from the end of the first line
+
+    if dt >= 1 / 4.0:
+        horizontal_end_point = (
+            int(end_point[0] + 60 * min(1.0, 4 * (dt - 0.25))),
+            end_point[1],
+        )
+        horizontal_end_point_shadow = np.add(
+            horizontal_end_point, delta_shadow * 0.5
+        ).astype(np.int32)
+        cv2.line(
+            image,
+            end_point_shadow,
+            horizontal_end_point_shadow,
+            color_shadow,  # Black color for the shadow
+            thickness=2,
+            lineType=cv2.LINE_AA,
+        )
+
+        cv2.line(
+            image,
+            end_point,
+            horizontal_end_point,
+            color,
+            thickness=2,
+            lineType=cv2.LINE_AA,
+        )
+
+    # Fill the parallelogram by using the fillPoly function
+    delta = np.array([max(0, 1 - dt * 4) * 15, 0])
+    pts = np.array([point1, point2, point3, point4], np.int32)
+    pts = (pts + delta).astype(np.int32)
+    pts_shadow = (pts + delta_shadow).astype(np.int32)
+    pts = pts.reshape((-1, 1, 2))
+    pts_shadow = pts_shadow.reshape((-1, 1, 2))
+
+    # draw main parallelogram
+    cv2.fillPoly(image, [pts_shadow], color_shadow, lineType=cv2.LINE_AA)
+    cv2.fillPoly(image, [pts], color, lineType=cv2.LINE_AA)
+
+    # Calculate text position (centered inside the parallelogram with adjusted padding)
+    text_x = pts[0][0][0] + left_padding
+    text_y = pts[0][0][1] + top_padding + text_size[1] // 2
+
+    # Add the text inside the parallelogram
+    cv2.putText(
+        image,
+        text,
+        (text_x, text_y),
+        font,
+        font_scale,
+        color_text,
+        font_thickness,
+        lineType=cv2.LINE_AA,
+    )
+
+    return image
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--video_path", type=str, required=True, help="Path to the input video file")
+    parser.add_argument("--checkpoint_path", type=str, default="exp/e2espatial_hogak/checkpoint_140.pt", help="Path to the model checkpoint")
+    parser.add_argument("--save_dir", type=str, default="exp/demo1", help="Directory to save predictions and output video")
+    parser.add_argument("--batch_size", type=int, default=16, help="Batch size for inference")
+    parser.add_argument("--num_workers", type=int, default=4, help="Number of workers for data loading")
+    parser.add_argument("--clip_len", type=int, default=64, help="Clip length (window size)")
+    parser.add_argument("--render", action="store_true", help="Render the output video with annotations")
+    
+    args = parser.parse_args()
+
+    # Set the arguments for inference
+    inference_args = get_args(
+        video_mp4=args.video_path,
+        resize=(224, 224),
+        clip_len=args.clip_len,
+        checkpoint_path=args.checkpoint_path,
+        save_dir=args.save_dir,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+    )
+
+    inference_args.pred_file = os.path.join(inference_args.save_dir, "predictions.json")
 
     transform = v2.Compose(
         [
-            v2.Resize(args.resize, antialias=False),
+            v2.Resize(inference_args.resize, antialias=False),
             v2.ToDtype(torch.float32, scale=True),
             v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ]
     )
 
     dataset = VideoFrameSlidingDataset(
-        args.video_mp4,
+        inference_args.video_mp4,
         mode="mp4",
-        window_size=args.clip_len,
-        stride=args.clip_len,
+        window_size=inference_args.clip_len,
+        stride=inference_args.clip_len,
         channel_first=False,
         transform=transform,
     )
 
     # Create the DataLoader for batch processing
     dataloader = DataLoader(
-        dataset, batch_size=args.batch_size, num_workers=args.num_workers
+        dataset, batch_size=inference_args.batch_size, num_workers=inference_args.num_workers
     )
 
     # Load the pre-trained model
-    model = get_model(args)
+    model = get_model(inference_args)
 
     # Run the inference and save the predictions
     pred_events = run_inference(
         model,
         dataloader,
-        args.classes,
-        args.pred_file,
+        inference_args.classes,
+        inference_args.pred_file,
         postprocess=True,
     )
+
+    if args.render:
+        # pred_events is a list of dicts, we take the first one for the single video
+        events = pred_events[0]["events"]
+        render_video(
+            args.video_path,
+            events,
+        )
+
