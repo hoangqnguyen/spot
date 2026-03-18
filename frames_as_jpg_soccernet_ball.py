@@ -144,7 +144,7 @@ def main(video_dir, out_dir, num_workers,
             for game in os.listdir(season_dir):
                 game_dir = os.path.join(season_dir, game)
                 for video_file in os.listdir(game_dir):
-                    if video_file.endswith('720p.mkv'):
+                    if video_file.endswith('720p.mp4'):
                         video_name = os.path.splitext(video_file)[0].replace(
                             '_720p', '')
                         worker_args.append((

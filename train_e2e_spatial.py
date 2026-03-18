@@ -1,6 +1,25 @@
 #!/usr/bin/env python3
-""" Training for E2E-Spot """
+"""Training for E2E-Spot"""
 
+from torchvision.ops.focal_loss import sigmoid_focal_loss
+from util.score import compute_mAPs, compute_mAPs_with_locations
+from util.dataset import DATASETS, load_classes
+from util.io import load_json, store_json, store_gz_json, clear_files
+from util.eval import (
+    process_frame_predictions_with_location,
+    process_frame_predictions_with_location,
+)
+from dataset.frame import ActionSpotDataset, ActionSpotVideoDataset
+from model.modules import *
+from model.shift import make_temporal_shift
+from model.common import step, BaseRGBModel, MLP, SAFC
+from tqdm import tqdm
+import timm
+import torchvision
+from torch.utils.data import DataLoader
+from torch.optim.lr_scheduler import ChainedScheduler, LinearLR, CosineAnnealingLR
+import torch.nn.functional as F
+import torch.nn as nn
 import os
 import argparse
 from contextlib import nullcontext
@@ -8,41 +27,16 @@ import random
 import numpy as np
 from tabulate import tabulate
 import torch
+import wandb  # Add wandb import
 
 torch.backends.cudnn.benchmark = True
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.optim.lr_scheduler import ChainedScheduler, LinearLR, CosineAnnealingLR
-from torch.utils.data import DataLoader
-import torchvision
-import timm
-from tqdm import tqdm
-
-from model.common import step, BaseRGBModel, MLP
-from model.shift import make_temporal_shift
-from model.modules import *
-from dataset.frame import ActionSpotDataset, ActionSpotVideoDataset
-from util.eval import (
-    process_frame_predictions_with_location,
-    process_frame_predictions_with_location,
-)
-from util.io import load_json, store_json, store_gz_json, clear_files
-from util.dataset import DATASETS, load_classes
-from util.score import compute_mAPs
-from util.det import (
-    convert_target_to_prediction_shape,
-    convert_prediction_to_target_shape,
-)
-from torchvision.ops.focal_loss import sigmoid_focal_loss
 
 
 EPOCH_NUM_FRAMES = 500000
-# EPOCH_NUM_FRAMES = 500
 
 BASE_NUM_WORKERS = 4
 
 BASE_NUM_VAL_EPOCHS = 20
-# BASE_NUM_VAL_EPOCHS = 2
 
 INFERENCE_BATCH_SIZE = 4
 
@@ -53,7 +47,7 @@ MAX_GRU_HIDDEN_DIM = 768
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("dataset", type=str, choices=DATASETS)
+    parser.add_argument("dataset", type=str)
     parser.add_argument("frame_dir", type=str, help="Path to extracted frames")
 
     parser.add_argument(
@@ -83,6 +77,10 @@ def get_args():
             "convnextt",
             "convnextt_tsm",
             "convnextt_gsm",
+            # hg cv v2
+            "convnextt2",
+            "convnextt2_tsm",
+            "convnextt2_gsm",
         ],
         help="CNN architecture for feature extraction",
     )
@@ -93,6 +91,44 @@ def get_args():
         default="gru",
         # choices=['', 'gru', 'deeper_gru', 'mstcn', 'asformer'],
         help="Spotting architecture, after spatial pooling",
+    )
+
+    parser.add_argument(
+        "--temp_gmlp_layers",
+        type=int,
+        default=2,
+    )
+
+    parser.add_argument(
+        "-p",
+        "--pred_loc_arch",
+        type=str,
+        default="mlp",
+        # choices=["mlp", "gmlp"],
+    )
+
+    parser.add_argument(
+        "--loc_gmlp_layers",
+        type=int,
+        default=2,
+    )
+
+    parser.add_argument(
+        "--tgmlp_attn_dim",
+        type=int,
+        default=None,
+    )
+
+    parser.add_argument(
+        "--lgmlp_attn_dim",
+        type=int,
+        default=None,
+    )
+
+    parser.add_argument(
+        "--use_channel_attention",
+        action="store_true",
+        help="Use channel attention after the Backbone",
     )
 
     parser.add_argument("--clip_len", type=int, default=100)
@@ -124,7 +160,7 @@ def get_args():
         "--predict_location", action="store_true", help="As the name suggests"
     )
 
-    parser.add_argument("--start_val_epoch", type=int)
+    parser.add_argument("--start_val_epoch", type=int, default=30)
     parser.add_argument("--criterion", choices=["map", "loss"], default="map")
 
     parser.add_argument(
@@ -146,9 +182,15 @@ def get_args():
         action="store_true",
         help="add MSE loss term to the training loss",
     )
+    parser.add_argument(
+        "--debug_only", action="store_true", help="As the name suggests"
+    )
+
+    parser.add_argument("--time_backward", action="store_true")
 
     # Eval mode
     parser.add_argument("--eval_only", action="store_true", help="As the name suggests")
+    parser.add_argument("--eval_split", type=str, default="test")
 
     parser.add_argument(
         "--checkpoint_path",
@@ -156,8 +198,61 @@ def get_args():
         required=False,
         help="Path of checkpoint for eval",
     )
+    parser.add_argument(
+        "--wandb_project", type=str, default="spot", help="Name of the W&B project."
+    )
 
     return parser.parse_args()
+
+
+def focal_loss_multiclass_with_logits(
+    input,
+    target,
+    gamma: float = 2.0,
+    reduction: str = "mean",
+    eps: float = 1e-8,
+):
+    ce_loss = F.cross_entropy(input, target, reduction="none")
+    pt = torch.exp(-ce_loss)
+    weight = (1 - pt) ** gamma
+    focal_loss = weight * ce_loss
+    if reduction == "mean":
+        return focal_loss.mean()
+    elif reduction == "sum":
+        return focal_loss.sum()
+    else:
+        return focal_loss
+
+
+def calculate_loss_contrast(im_feat, labels):
+    """
+    Calculate the loss contrast based on the provided labels and image features.
+
+    Args:
+    - labels (torch.Tensor): A tensor of labels corresponding to the features.
+    - im_feat (torch.Tensor): A tensor representing the image features.
+    - num_classes (int): The number of classes (default is 3).
+    - target_class (int): The class label of interest for contrast calculation (default is 2).
+
+    Returns:
+    - loss_contrast (float): The calculated loss contrast value.
+    """
+    if (labels == 0).all():
+        return torch.tensor(0.0)
+    # Create foreground mask (excluding background class 0)
+    fg_mask = labels != 0
+
+    # Extract foreground and background features based on masks
+    fg_feat = im_feat[fg_mask]
+    bg_feat = im_feat[~fg_mask]
+
+    # Calculate the delta (difference) between foreground and background features
+    delta = torch.norm(fg_feat.unsqueeze(1) - bg_feat.unsqueeze(0), dim=-1).mean()
+
+    # Compute the loss contrast
+    loss_contrast = 1 / (delta.mean() + 1e-6)
+
+    return loss_contrast
 
 
 class E2EModel(BaseRGBModel):
@@ -172,10 +267,76 @@ class E2EModel(BaseRGBModel):
             clip_len,
             modality,
             predict_location=False,
+            pred_loc_arch="mlp",
+            temp_gmlp_layers=2,
+            loc_gmlp_layers=2,
+            tgmlp_attn_dim=None,
+            lgmlp_attn_dim=None,
+            time_backward=False,
+            use_channel_attention=False,
         ):
+            """
+            Initializes the end-to-end spatial model.
+
+            This constructor sets up the feature extraction backbone, temporal modeling head,
+            and optionally, a location prediction head. It supports various architectures
+            for both feature extraction and temporal modeling.
+
+            Args:
+                num_classes (int): Number of classes for the final classification.
+                feature_arch (str): Architecture for the feature extractor.
+                    Supported: "rn18", "rn50" (ResNet variants),
+                               "rny002", "rny008" (RegNetY variants),
+                               "convnextt", "convnextt2" (ConvNeXt variants).
+                    Suffixes "_tsm" or "_gsm" can be added to enable Temporal Shift
+                    Modules or Gated Shift Modules, respectively.
+                temporal_arch (str): Architecture for the temporal modeling head.
+                    Supported: "gru", "deeper_gru", "mingru" (GRU variants),
+                               "mstcn" (Multi-Stage Temporal Convolutional Network),
+                               "asformer" (Action Segment Transformer),
+                               "" (simple Fully Connected layer),
+                               "gmlp" (gMLP network),
+                               "transformer_enc_only_base_11m" (Transformer Encoder),
+                               "mamba_1" (Mamba state space model),
+                               "bimamba" (Bidirectional Mamba),
+                               "rdfas6" (RDFAS6 model).
+                clip_len (int): Length of the input video clips (number of frames).
+                modality (str): Input data modality.
+                    Supported: "rgb", "flow", "bw" (black & white).
+                predict_location (bool, optional): If True, a location prediction
+                    head is added. Defaults to False.
+                pred_loc_arch (str, optional): Architecture for the location
+                    prediction head if `predict_location` is True.
+                    Supported: "fc" (Fully Connected), "safc" (Self-Attention FC),
+                               "mlp" (Multi-Layer Perceptron), "gmlp" (gMLP network).
+                    Defaults to "mlp".
+                temp_gmlp_layers (int, optional): Number of gMLP blocks for the
+                    temporal gMLP head. Defaults to 2.
+                loc_gmlp_layers (int, optional): Number of gMLP blocks for the
+                    location prediction gMLP head. Defaults to 2.
+                tgmlp_attn_dim (int, optional): Attention dimension for the
+                    temporal gMLP blocks. If None, standard gMLP is used.
+                    Defaults to None.
+                lgmlp_attn_dim (int, optional): Attention dimension for the
+                    location prediction gMLP blocks. If None, standard gMLP is used.
+                    Defaults to None.
+                time_backward (bool, optional): If True, processes temporal sequences
+                    in reverse for models like GRU. Defaults to False.
+                use_channel_attention (bool, optional): If True, adds a channel
+                    attention module after the feature extractor. Defaults to False.
+
+            Raises:
+                NotImplementedError: If an unsupported `feature_arch`,
+                    `temporal_arch`, or `pred_loc_arch` is provided.
+            """
+
             super().__init__()
+            self._pred_loc_arch = pred_loc_arch
+            self.time_backward = time_backward
             is_rgb = modality == "rgb"
             in_channels = {"flow": 2, "bw": 1, "rgb": 3}[modality]
+            self.feature_arch = feature_arch
+            self._use_channel_attention = use_channel_attention
 
             if feature_arch.startswith(("rn18", "rn50")):
                 resnet_name = feature_arch.split("_")[0].replace("rn", "resnet")
@@ -218,6 +379,15 @@ class E2EModel(BaseRGBModel):
                         bias=False,
                     )
 
+            elif "convnextt2" in feature_arch:
+                from transformers import ConvNextV2ForImageClassification
+
+                features = ConvNextV2ForImageClassification.from_pretrained(
+                    "facebook/convnextv2-pico-1k-224"
+                )
+                feat_dim = features.classifier.in_features
+                features.classifier = nn.Identity()
+
             elif "convnextt" in feature_arch:
                 features = timm.create_model("convnext_tiny", pretrained=is_rgb)
                 feat_dim = features.head.fc.in_features
@@ -231,6 +401,13 @@ class E2EModel(BaseRGBModel):
             else:
                 raise NotImplementedError(feature_arch)
 
+            if self._use_channel_attention:
+                from model.modules import ChannelAttention
+
+                self._channel_attention = ChannelAttention(feat_dim, reduction=8)
+
+            else:
+                self._channel_attention = nn.Identity()
             # Add Temporal Shift Modules
             self._require_clip_len = -1
             if feature_arch.endswith("_tsm"):
@@ -257,6 +434,17 @@ class E2EModel(BaseRGBModel):
                         hidden_dim,
                         num_layers=3 if temporal_arch[0] == "d" else 1,
                     )
+                elif temporal_arch == "mingru":
+                    from model.min_gru import MinRNNPredictor
+
+                    self._pred_fine = MinRNNPredictor(
+                        input_size=feat_dim,
+                        hidden_size=hidden_dim,
+                        output_size=num_classes,
+                        n_layers=3,
+                        rnn_type="mingru",
+                        batch_first=True,
+                    )
                 else:
                     raise NotImplementedError(temporal_arch)
             elif temporal_arch == "mstcn":
@@ -265,6 +453,29 @@ class E2EModel(BaseRGBModel):
                 self._pred_fine = ASFormerPrediction(feat_dim, num_classes, 3)
             elif temporal_arch == "":
                 self._pred_fine = FCPrediction(feat_dim, num_classes)
+            elif temporal_arch == "gmlp":
+                from g_mlp_pytorch.g_mlp_pytorch import Residual, gMLPBlock, PreNorm
+
+                hidden_dim = feat_dim
+                self._pred_fine = nn.Sequential(
+                    nn.LayerNorm(hidden_dim),
+                    *[
+                        Residual(
+                            PreNorm(
+                                hidden_dim,
+                                gMLPBlock(
+                                    dim=hidden_dim,
+                                    dim_ff=hidden_dim * 2,
+                                    seq_len=clip_len,
+                                    heads=2,
+                                    attn_dim=tgmlp_attn_dim,
+                                ),
+                            )
+                        )
+                        for _ in range(temp_gmlp_layers)
+                    ],
+                    nn.Linear(hidden_dim, num_classes),
+                )
             elif temporal_arch == "transformer_enc_only_base_11m":
                 from positional_encodings.torch_encodings import (
                     PositionalEncoding1D,
@@ -288,7 +499,8 @@ class E2EModel(BaseRGBModel):
                     attn_dropout=0.1,  # dropout post-attention
                     ff_dropout=0.1,  # feedforward dropout
                 )  # encoder-only transformer
-                fc = MLP(hidden_dim, hidden_dim, num_classes, 3)  # final classifier
+                # final classifier
+                fc = MLP(hidden_dim, hidden_dim, num_classes, 3)
 
                 # put everything together
                 self._pred_fine = nn.Sequential(down_projection, pos_enc, encoder, fc)
@@ -296,8 +508,8 @@ class E2EModel(BaseRGBModel):
             elif temporal_arch == "mamba_1":
                 from mamba_ssm import Mamba
 
-                hidden_dim = 1024
-                down_projection = nn.Linear(feat_dim, hidden_dim)
+                hidden_dim = feat_dim
+                # down_projection = nn.Linear(feat_dim, hidden_dim)
                 mamba = Mamba(
                     # This module uses roughly 3 * expand * d_model^2 parameters
                     d_model=hidden_dim,  # Model dimension d_model
@@ -307,46 +519,93 @@ class E2EModel(BaseRGBModel):
                 ).to("cuda")
 
                 fc = MLP(hidden_dim, hidden_dim, num_classes, 3)
-                self._pred_fine = nn.Sequential(down_projection, mamba, fc)
+                self._pred_fine = nn.Sequential(mamba, fc)
+            elif temporal_arch == "bimamba":
+                from mamba_ssm import Mamba
 
+                hidden_dim = feat_dim
+                # down_projection = nn.Linear(feat_dim, hidden_dim)
+                mamba = Mamba(
+                    # This module uses roughly 3 * expand * d_model^2 parameters
+                    d_model=hidden_dim,  # Model dimension d_model
+                    d_state=16,  # SSM state expansion factor
+                    d_conv=4,  # Local convolution width
+                    expand=2,  # Block expansion factor,
+                    bimamba=True,
+                ).to("cuda")
+
+                fc = MLP(hidden_dim, hidden_dim, num_classes, 3)
+                self._pred_fine = nn.Sequential(mamba, fc)
+            elif temporal_arch == "rdfas6":
+                from model.rdfas6 import RDFAS6
+
+                hidden_dim = feat_dim
+                emb_c = 512
+                _temp_fine = RDFAS6(input_c=feat_dim, emb_c=emb_c)
+                fc = FCPrediction(emb_c, num_classes)
+
+                self._pred_fine = nn.Sequential(_temp_fine, fc)
             else:
                 raise NotImplementedError(temporal_arch)
 
             self._predict_location = predict_location
             if self._predict_location:
-                # CNN features hook
-                self.__cnn_features = None
 
-                def get_feature_map():
-                    def hook_fn(module, input, output):
-                        self.__cnn_features = output  # so overfit with temporal preds
-                        # self.__cnn_features = output.detach()
+                if pred_loc_arch == "fc":
+                    self._pred_loc = nn.Linear(hidden_dim, 2)
 
-                    return hook_fn
+                elif pred_loc_arch == "safc":
+                    self._pred_loc = SAFC(hidden_dim, 2)
 
-                self.__hook = self._features.final_conv.register_forward_hook(
-                    get_feature_map()
-                )
-                # self._pos_c = self._features.head.fc.in_features
-                self._pos_c = 368
-                self._P = 7
-                # self._pred_loc = FCLayers(self._feat_dim, 2)
+                elif pred_loc_arch == "mlp":
+                    self._pred_loc = nn.Sequential(
+                        MLP(
+                            hidden_dim,
+                            hidden_dim * 3,
+                            output_dim=hidden_dim,
+                            num_layers=2,
+                        ),
+                        nn.Linear(hidden_dim, 2),
+                    )
 
-                # self._pred_loc = nn.Conv2d(
-                #     in_channels=self._pos_c,
-                #     out_channels=3,
-                #     kernel_size=1,
-                #     stride=1,
-                #     padding=0,
+                elif pred_loc_arch == "gmlp":
+                    from g_mlp_pytorch.g_mlp_pytorch import Residual, gMLPBlock, PreNorm
+
+                    self._pred_loc = nn.Sequential(
+                        nn.LayerNorm(hidden_dim),
+                        *[
+                            Residual(
+                                PreNorm(
+                                    hidden_dim,
+                                    gMLPBlock(
+                                        dim=hidden_dim,
+                                        dim_ff=hidden_dim * 2,
+                                        seq_len=clip_len,
+                                        heads=2,
+                                        attn_dim=lgmlp_attn_dim,
+                                    ),
+                                )
+                            )
+                            for _ in range(loc_gmlp_layers)
+                        ],
+                        nn.Linear(hidden_dim, 2),
+                    )
+                else:
+                    raise NotImplementedError(
+                        f"Unimplemented location predictor: {pred_loc_arch}"
+                    )
+
+                # from model.common import ImprovedLocationPredictor
+
+                # self._pred_loc = ImprovedLocationPredictor(
+                #     input_dim=hidden_dim, hidden_dim=256, output_dim=2
                 # )
-                from model.modules import ImprovedLocationPredictor
-
-                self._pred_loc = ImprovedLocationPredictor(
-                    self._pos_c, hidden_dim=128, out_dim=2, nhead=4, num_layers=3
-                )
 
         def forward(self, x):
             batch_size, true_clip_len, channels, height, width = x.shape
+
+            if self.time_backward:
+                x = x.flip(1)
 
             clip_len = true_clip_len
             if self._require_clip_len > 0:
@@ -357,10 +616,14 @@ class E2EModel(BaseRGBModel):
                 if true_clip_len < self._require_clip_len:
                     x = F.pad(x, (0,) * 7 + (self._require_clip_len - true_clip_len,))
                     clip_len = self._require_clip_len
+            im_feat = self._features(x.view(-1, channels, height, width))
 
-            im_feat = self._features(x.view(-1, channels, height, width)).reshape(
-                batch_size, clip_len, self._feat_dim
-            )
+            if "convnextt2" in self.feature_arch:
+                im_feat = im_feat.logits
+
+            im_feat = im_feat.reshape(batch_size, clip_len, self._feat_dim)
+            if self._use_channel_attention:
+                im_feat = self._channel_attention(im_feat)
 
             if true_clip_len != clip_len:
                 # Undo padding
@@ -368,22 +631,29 @@ class E2EModel(BaseRGBModel):
 
             loc_feat = None
             if self._predict_location:
-                # breakpoint()
-                # loc_feat = self._pred_loc(self.__cnn_features).permute(
-                #     0, 2, 3, 1
-                # )  # B*T, H, W, 2
-                loc_feat = self._pred_loc(self.__cnn_features)  # B*T, 2
+                loc_feat = self._pred_loc(im_feat)
+                if self.time_backward:
+                    loc_feat = loc_feat.flip(1)
 
-            return {"im_feat": self._pred_fine(im_feat), "loc_feat": loc_feat}
+            ev_feat = self._pred_fine(im_feat)
+            return {
+                "im_feat": ev_feat if not self.time_backward else ev_feat.flip(1),
+                "loc_feat": loc_feat,
+                "cnn_feat": im_feat,
+            }
 
         def print_stats(self):
             print(f"Model params:{sum(p.numel() for p in self.parameters()):,}")
             print(
                 f"CNN features:{sum(p.numel() for p in self._features.parameters()):,}"
             )
-            print(f"Temporal:{sum(p.numel() for p in self._pred_fine.parameters()):,}")
+            print(
+                f"Temporal Head:{sum(p.numel() for p in self._pred_fine.parameters()):,}"
+            )
             if hasattr(self, "_pred_loc"):
-                print(f"Spatial:{sum(p.numel() for p in self._pred_loc.parameters()):,}")
+                print(
+                    f"Spatial Head:{sum(p.numel() for p in self._pred_loc.parameters()):,}"
+                )
 
     def __init__(
         self,
@@ -395,6 +665,13 @@ class E2EModel(BaseRGBModel):
         device="cuda",
         predict_location=False,
         multi_gpu=False,
+        pred_loc_arch="mlp",
+        temp_gmlp_layers=2,
+        loc_gmlp_layers=2,
+        tgmlp_attn_dim=None,
+        lgmlp_attn_dim=None,
+        time_backward=False,
+        use_channel_attention=False,
     ):
         self.device = device
         self._multi_gpu = multi_gpu
@@ -405,7 +682,15 @@ class E2EModel(BaseRGBModel):
             clip_len,
             modality,
             predict_location,
+            pred_loc_arch=pred_loc_arch,
+            temp_gmlp_layers=temp_gmlp_layers,
+            loc_gmlp_layers=loc_gmlp_layers,
+            tgmlp_attn_dim=tgmlp_attn_dim,
+            lgmlp_attn_dim=lgmlp_attn_dim,
+            time_backward=time_backward,
+            use_channel_attention=use_channel_attention,
         )
+        # self._model = torch.compile(self._model)
         self._model.print_stats()
 
         if multi_gpu:
@@ -413,6 +698,7 @@ class E2EModel(BaseRGBModel):
 
         self._model.to(device)
         self._num_classes = num_classes
+        self._temporal_arch = temporal_arch
 
     def epoch(
         self,
@@ -438,14 +724,23 @@ class E2EModel(BaseRGBModel):
         epoch_loss = 0.0
         epoch_loss_cls = 0.0
         epoch_loss_loc = 0.0
+        epoch_loss_contrast = 0.0
+
+        ctx = (
+            nullcontext()
+            if self._temporal_arch in ["rdfas6", "bimamba"]
+            else torch.cuda.amp.autocast()
+        )
+
         with torch.no_grad() if optimizer is None else nullcontext():
             pbar = tqdm(loader)
             for batch_idx, batch in enumerate(pbar):
-                frame = loader.dataset.load_frame_gpu(batch, self.device)
+                # frame = loader.dataset.load_frame_gpu(batch, self.device)
+                frame = batch["frame"].to(self.device)
                 label = batch["label"].to(self.device)
 
                 if self._model._predict_location:
-                    target_xy = batch["xy"].to(self.device).reshape(-1, 2) # B*T, 2
+                    target_xy = batch["xy"].to(self.device).reshape(-1, 2)  # B*T, 2
 
                 # Depends on whether mixup is used
                 label = (
@@ -454,14 +749,20 @@ class E2EModel(BaseRGBModel):
                     else label.view(-1, label.shape[-1])
                 )
 
-                with torch.cuda.amp.autocast():
+                with ctx if optimizer is not None else nullcontext():
                     preds = self._model(frame)
+
+                    cnn_feat = preds["cnn_feat"]
                     pred = preds["im_feat"]
                     loc = preds["loc_feat"]
 
                     loss = 0.0
                     loss_cls = 0.0
                     loss_loc = 0.0
+
+                    # loss_contrast = calculate_loss_contrast(cnn_feat.flatten(0,1), label)
+                    loss_contrast = torch.tensor(0.0).to(self.device)
+
                     if len(pred.shape) == 3:
                         pred = pred.unsqueeze(0)
 
@@ -470,21 +771,26 @@ class E2EModel(BaseRGBModel):
                             pred[i].reshape(-1, self._num_classes), label, **ce_kwargs
                         )
 
+                        # loss_cls += focal_loss_multiclass_with_logits(
+                        #     pred[i].reshape(-1, self._num_classes), label, gamma=2.0, reduction='mean'
+                        # )
+
                     if self._model._predict_location:
                         # Assume the objectness score is the first element in loc[i], and the rest are x and y coordinates.
-                        # breakpoint()
-                        pred_loc = loc.reshape(-1, 2) # B*T, 2
+                        pred_loc = loc.reshape(-1, 2)  # B*T, 2
 
-                        event_mask = (label != 0).float().reshape(-1) # B*T
+                        event_mask = (label != 0).float().reshape(-1)  # B*T
 
                         # Apply the standard L1 loss to the masked x and y coordinates
                         xy_loss = F.l1_loss(
                             pred_loc.sigmoid(), target_xy, reduction="none"
                         ).sum(dim=-1)
 
-                        loss_loc += (xy_loss * event_mask).sum() / event_mask.sum()
+                        loss_loc += (xy_loss * event_mask).sum() / (
+                            event_mask.sum() + 1e-6
+                        )
 
-                    loss = loss_cls + loss_loc
+                    loss = loss_cls + loss_loc + loss_contrast * 0.1
 
                 if optimizer is not None:
                     step(
@@ -497,6 +803,7 @@ class E2EModel(BaseRGBModel):
 
                 epoch_loss += loss.detach().item()
                 epoch_loss_cls += loss_cls.detach().item()
+                epoch_loss_contrast += loss_contrast.detach().item()
 
                 if self._model._predict_location:
                     epoch_loss_loc += loss_loc.detach().item()
@@ -506,6 +813,7 @@ class E2EModel(BaseRGBModel):
                         "sum": loss.detach().item(),
                         "cls": loss_cls.detach().item(),
                         "loc": loss_loc.detach().item(),
+                        "contrast": loss_contrast.detach().item(),
                     }
                 )
 
@@ -513,9 +821,10 @@ class E2EModel(BaseRGBModel):
             "sum": epoch_loss / len(loader),
             "cls": epoch_loss_cls / len(loader),
             "loc": epoch_loss_loc / len(loader),
+            "contrast": epoch_loss_contrast / len(loader),
         }
 
-    def predict(self, seq, use_amp=True, presence_threshold=0.):
+    def predict(self, seq, use_amp=False, presence_threshold=0.0):
         if not isinstance(seq, torch.Tensor):
             seq = torch.FloatTensor(seq)
         if len(seq.shape) == 4:  # (L, C, H, W)
@@ -523,18 +832,22 @@ class E2EModel(BaseRGBModel):
         if seq.device != self.device:
             seq = seq.to(self.device)
 
-        B, T = seq.shape[:2]
+        ctx = (
+            nullcontext()
+            if self._temporal_arch in ["rdfas6", "bimamba"]
+            else torch.cuda.amp.autocast()
+        )
 
         self._model.eval()
         with torch.no_grad():
-            with torch.cuda.amp.autocast() if use_amp else nullcontext():
+            with ctx if use_amp else nullcontext():
                 pred_dict = self._model(seq)
             pred_cls_score = torch.softmax(pred_dict["im_feat"], axis=2).cpu().numpy()
             pred_cls = torch.argmax(pred_dict["im_feat"], axis=2).cpu().numpy()
             if self._model._predict_location:
                 pred_loc = (
                     pred_dict["loc_feat"]
-                    .detach()
+                    .reshape(seq.shape[0], -1, 2)
                     .sigmoid()
                     .cpu()
                     .numpy()
@@ -542,116 +855,6 @@ class E2EModel(BaseRGBModel):
                 return pred_cls, pred_cls_score, pred_loc
             else:
                 return pred_cls, pred_cls_score
-
-
-def evaluate_old(
-    model,
-    dataset,
-    split,
-    classes,
-    save_pred,
-    calc_stats=True,
-    save_scores=True,
-    predict_location=False,
-):
-    # TODO: Add eval for spatial predictions
-    pred_dict = {}
-    for video, video_len, _ in dataset.videos:
-        pred_dict[video] = (
-            np.zeros((video_len, len(classes) + 1), np.float32),
-            np.zeros(video_len, np.int32),
-        )
-
-    # Do not up the batch size if the dataset augments
-    batch_size = 1 if dataset.augment else INFERENCE_BATCH_SIZE
-
-    for clip in tqdm(
-        DataLoader(
-            dataset,
-            num_workers=BASE_NUM_WORKERS * 2,
-            pin_memory=True,
-            batch_size=batch_size,
-        )
-    ):
-        if batch_size > 1:
-            # Batched by dataloader
-            if predict_location:
-                _, batch_pred_scores, batch_pred_loc = model.predict(clip["frame"])
-            else:
-                _, batch_pred_scores = model.predict(clip["frame"])
-
-            for i in range(clip["frame"].shape[0]):
-                video = clip["video"][i]
-                scores, support = pred_dict[video]
-
-                pred_scores = batch_pred_scores[i]
-                pred_loc = batch_pred_loc[i]
-
-                start = clip["start"][i].item()
-                if start < 0:
-                    pred_scores = pred_scores[-start:, :]
-                    start = 0
-                end = start + pred_scores.shape[0]
-                if end >= scores.shape[0]:
-                    end = scores.shape[0]
-                    pred_scores = pred_scores[: end - start, :]
-                scores[start:end, :] += pred_scores
-                support[start:end] += 1
-
-        else:
-            # Batched by dataset
-
-            scores, support = pred_dict[clip["video"][0]]
-
-            start = clip["start"][0].item()
-            if predict_location:
-                _, pred_scores, pred_loc = model.predict(clip["frame"][0])
-            else:
-                _, pred_scores = model.predict(clip["frame"][0])
-
-            if start < 0:
-                pred_scores = pred_scores[:, -start:, :]
-                start = 0
-            end = start + pred_scores.shape[1]
-            if end >= scores.shape[0]:
-                end = scores.shape[0]
-                pred_scores = pred_scores[:, : end - start, :]
-
-            scores[start:end, :] += np.sum(pred_scores, axis=0)
-            support[start:end] += pred_scores.shape[0]
-
-    err, f1, pred_events, pred_events_high_recall, pred_scores = (
-        process_frame_predictions(dataset, classes, pred_dict)
-    )
-
-    avg_mAP = None
-    if calc_stats:
-        print("=== Results on {} (w/o NMS) ===".format(split))
-        print("Error (frame-level): {:0.2f}\n".format(err.get() * 100))
-
-        def get_f1_tab_row(str_k):
-            k = classes[str_k] if str_k != "any" else None
-            return [str_k, f1.get(k) * 100, *f1.tp_fp_fn(k)]
-
-        rows = [get_f1_tab_row("any")]
-        for c in sorted(classes):
-            rows.append(get_f1_tab_row(c))
-        print(
-            tabulate(
-                rows, headers=["Exact frame", "F1", "TP", "FP", "FN"], floatfmt="0.2f"
-            )
-        )
-        print()
-
-        mAPs, _ = compute_mAPs(dataset.labels, pred_events_high_recall)
-        avg_mAP = np.mean(mAPs[1:])
-
-    if save_pred is not None:
-        store_json(save_pred + ".json", pred_events)
-        store_gz_json(save_pred + ".recall.json.gz", pred_events_high_recall)
-        if save_scores:
-            store_gz_json(save_pred + ".score.json.gz", pred_scores)
-    return avg_mAP
 
 
 def evaluate(
@@ -663,8 +866,7 @@ def evaluate(
     calc_stats=True,
     save_scores=True,
     predict_location=False,
-    presence_threshold=0.5,
-    scale_location=224,
+    px_scale=224,
 ):
     # Initialize the prediction dictionary and location errors list
     pred_dict = {}
@@ -676,18 +878,19 @@ def evaluate(
                 (video_len, len(classes) + 1), np.float32
             ),  # Stores scores for each class
             np.zeros(video_len, np.int32),  # Stores support (number of frames)
-            np.zeros((video_len, 2), np.float32),  # Stores location predictions (x, y)
+            # Stores location predictions (x, y)
+            np.zeros((video_len, 2), np.float32),
         )
 
     # Determine batch size based on whether the dataset is augmented
     batch_size = 1 if dataset.augment else INFERENCE_BATCH_SIZE
-
+    idx = 0
     # Iterate over the dataset using DataLoader
     for clip in tqdm(
         DataLoader(
             dataset,
             num_workers=BASE_NUM_WORKERS * 2,
-            pin_memory=True,
+            # pin_memory=True,
             batch_size=batch_size,
         )
     ):
@@ -695,8 +898,10 @@ def evaluate(
             # When batch size is greater than 1 (batched by dataloader)
             if predict_location:
                 # Predict scores and locations if location prediction is enabled
-                _, batch_pred_scores, batch_pred_loc = model.predict(
-                    clip["frame"], presence_threshold=presence_threshold
+                _, batch_pred_scores, batch_pred_loc = model.predict(clip["frame"])
+
+                batch_pred_loc = batch_pred_loc.reshape(
+                    batch_pred_scores.shape[0], -1, 2
                 )
             else:
                 # Predict only scores if location prediction is not enabled
@@ -728,12 +933,12 @@ def evaluate(
                     pred_scores = pred_scores[: end - start, :]
                     if predict_location:
                         pred_loc = pred_loc[: end - start, :]
-                        # pred_loc = pred_loc[-start:, :]
                 scores[start:end, :] += pred_scores  # Accumulate scores
                 support[
                     start:end
                 ] += 1  # Increment the support count because the frame is present
                 if predict_location:
+                    # fg_mask = np.argmax(pred_scores, axis=-1) > 0
                     locations[start:end, :] = pred_loc
 
         else:
@@ -743,9 +948,7 @@ def evaluate(
             start = clip["start"][0].item()
             if predict_location:
                 # Predict scores and locations if location prediction is enabled
-                _, pred_scores, pred_loc = model.predict(
-                    clip["frame"][0], presence_threshold=presence_threshold
-                )
+                _, pred_scores, pred_loc = model.predict(clip["frame"][0])
             else:
                 # Predict only scores if location predictiobn is not enabled
                 _, pred_scores = model.predict(clip["frame"][0])
@@ -764,59 +967,57 @@ def evaluate(
                 if predict_location:
                     pred_loc = pred_loc[:, : end - start, :]
 
-            scores[start:end, :] += np.sum(pred_scores, axis=0)  # Accumulate scores
-            support[start:end] += pred_scores.shape[0]  # Increment the support count
+            # Accumulate scores
+            scores[start:end, :] += np.sum(pred_scores, axis=0)
+            # Increment the support count
+            support[start:end] += pred_scores.shape[0]
             if predict_location:
+                # fg_mask = np.argmax(pred_scores, axis=-1) > 0
                 locations[start:end, :] = pred_loc
 
-    # breakpoint()
-    # if predict_location:
-    #     pixel_thresholds_for_positives = np.arange(0, 11) # 0 to 10
-    #     for threshold in pixel_thresholds_for_positives:
-
     # Process the frame-level predictions (class)
-    err, f1, pred_events, pred_events_high_recall, pred_scores, location_errs = (
+    err, f1, pred_events, pred_events_high_recall, pred_scores = (
         process_frame_predictions_with_location(dataset, classes, pred_dict)
     )
 
-    avg_mAP = None
+    avg_mAP_t = None
     if calc_stats:
-        # Print the evaluation results
-        print("=== Results on {} (w/o NMS) ===".format(split))
-        print("Error (frame-level): {:0.2f}\n".format(err.get() * 100))
+        for fg_threshold in [0.25]:
+            # Print the evaluation results
+            # print("=== Results on {} (w/o NMS) ===".format(split))
+            print("=== Results on {} (FG_THRES={:.2f}) ===".format(split, fg_threshold))
+            print("Error (frame-level): {:0.2f}\n".format(err.get() * 100))
 
-        def get_f1_tab_row(str_k):
-            k = classes[str_k] if str_k != "any" else None
-            return [str_k, f1.get(k) * 100, *f1.tp_fp_fn(k)]
+            def get_f1_tab_row(str_k):
+                k = classes[str_k] if str_k != "any" else None
+                return [str_k, f1.get(k) * 100, *f1.tp_fp_fn(k)]
 
-        rows = [get_f1_tab_row("any")]
-        for c in sorted(classes):
-            rows.append(get_f1_tab_row(c))
-        print(
-            tabulate(
-                rows, headers=["Exact frame", "F1", "TP", "FP", "FN"], floatfmt="0.2f"
-            )
-        )
-        print()
-
-        # Calculate mean average precision (mAP)
-        mAPs, _ = compute_mAPs(dataset.labels, pred_events_high_recall)
-        avg_mAP = np.mean(mAPs[1:])
-
-        if predict_location:
-            px_thresholds = np.arange(0, 11)[None, :]  # 0 to 10, shape = (10, 1)
-            corrects = (
-                location_errs[:, None] * scale_location <= px_thresholds
-            )  # shape = (N, 10)
-            accuracies = corrects.mean(axis=0)  # shape = (10,)
-            # breakpoint()
-            print("Location accuracies (pixel):")
+            rows = [get_f1_tab_row("any")]
+            for c in sorted(classes):
+                rows.append(get_f1_tab_row(c))
             print(
                 tabulate(
-                    accuracies.reshape(1, -1).tolist(),
-                    headers=list(map(str, px_thresholds[0].tolist())),
+                    rows,
+                    headers=["Exact frame", "F1", "TP", "FP", "FN"],
+                    floatfmt="0.2f",
                 )
             )
+            print()
+
+            # Calculate mean average precision (mAP)
+            # mAPs, _ = compute_mAPs(dataset.labels, pred_events_high_recall)
+            mAPs_t, mAPs_p = compute_mAPs_with_locations(
+                dataset.labels,
+                pred_events_high_recall,
+                px_scale=px_scale,
+                fg_threshold=fg_threshold,
+            )
+            avg_mAP_t = np.mean(mAPs_t[1:])
+            avg_mAP_s = np.mean(mAPs_p)
+
+            # hamornic mean
+            avg_mAP = 2 * avg_mAP_t * avg_mAP_s / (avg_mAP_t + avg_mAP_s + 1e-6)
+            print("Harmonic mean (temporal and spatial mAPs): {:0.2%}".format(avg_mAP))
 
     if save_pred is not None:
         os.makedirs(os.path.dirname(save_pred), exist_ok=True)
@@ -826,6 +1027,7 @@ def evaluate(
         if save_scores:
             store_gz_json(save_pred + ".score.json.gz", pred_scores)
 
+    print("=" * 50)
     return avg_mAP  # Return the average mean average precision (mAP)
 
 
@@ -852,7 +1054,32 @@ def get_best_epoch_and_history(save_dir, criterion):
 
 
 def get_datasets(args):
-    classes = load_classes(os.path.join("data", args.dataset, "class.txt"))
+    # Prefer explicit class file; if missing, try to derive classes from
+    # a train.json (supports `data/<dataset>/volli_dataset_json/train.json`).
+    base_dir = os.path.join("data", args.dataset)
+    class_file = os.path.join(base_dir, "class.txt")
+    if os.path.exists(class_file):
+        classes = load_classes(class_file)
+    else:
+        # Look for train.json in standard location or in `volli_dataset_json`
+        candidate = os.path.join(base_dir, "train.json")
+        alt_candidate = os.path.join(base_dir, "volli_dataset_json", "train.json")
+        chosen = (
+            candidate
+            if os.path.exists(candidate)
+            else (alt_candidate if os.path.exists(alt_candidate) else None)
+        )
+        if chosen is None:
+            raise FileNotFoundError(
+                f"Missing class.txt and no train.json found for dataset {args.dataset}"
+            )
+        data = load_json(chosen)
+        labels = set()
+        for vid in data:
+            for ev in vid.get("events", []):
+                labels.add(ev["label"])
+        labels = sorted(labels)
+        classes = {x: i + 1 for i, x in enumerate(labels)}
 
     dataset_len = EPOCH_NUM_FRAMES // args.clip_len
     dataset_kwargs = {
@@ -871,8 +1098,10 @@ def get_datasets(args):
             args.frame_dir,
             args.modality,
             args.clip_len,
+            is_eval=True,
             crop_dim=args.crop_dim,
             overlap_len=0,
+            num_videos=2 if args.debug_only else None,
         )
 
     if args.fg_upsample is not None:
@@ -899,6 +1128,7 @@ def get_datasets(args):
             args.modality,
             args.clip_len,
             dataset_len // 4,
+            is_eval=True,
             **dataset_kwargs,
         )
         val_data.print_info()
@@ -912,19 +1142,42 @@ def load_from_save(args, model, optimizer, scaler, lr_scheduler):
     epoch = get_last_epoch(args.save_dir)
 
     print("Loading from epoch {}".format(epoch))
-    model.load(
-        torch.load(os.path.join(args.save_dir, "checkpoint_{:03d}.pt".format(epoch)))
+    checkpoint = torch.load(
+        os.path.join(args.save_dir, "checkpoint_{:03d}.pt".format(epoch))
     )
 
-    if args.resume:
-        # print('(Resume) Train loss:', model.epoch(train_loader))
-        # print('(Resume) Val loss:', model.epoch(val_loader))
-        opt_data = torch.load(
-            os.path.join(args.save_dir, "optim_{:03d}.pt".format(epoch))
+    # Filter out fc layer which causes size mismatch
+    filtered_checkpoint = {k: v for k, v in checkpoint.items() if "_fc_out" not in k}
+    filter_applied = len(filtered_checkpoint) < len(checkpoint)
+
+    if filter_applied:
+        print(
+            f"Loading checkpoint with strict=False (filtered {len(checkpoint) - len(filtered_checkpoint)} keys containing '_fc_out')"
         )
-        optimizer.load_state_dict(opt_data["optimizer_state_dict"])
-        scaler.load_state_dict(opt_data["scaler_state_dict"])
-        lr_scheduler.load_state_dict(opt_data["lr_state_dict"])
+    else:
+        print("Loading checkpoint with strict=False")
+
+    model.load(filtered_checkpoint, strict=False)
+
+    if args.resume:
+        if filter_applied:
+            print(
+                "Skipping optimizer/scheduler load due to model architecture change (keys filtered)."
+            )
+        else:
+            # print('(Resume) Train loss:', model.epoch(train_loader))
+            # print('(Resume) Val loss:', model.epoch(val_loader))
+            try:
+                opt_data = torch.load(
+                    os.path.join(args.save_dir, "optim_{:03d}.pt".format(epoch))
+                )
+                optimizer.load_state_dict(opt_data["optimizer_state_dict"])
+                scaler.load_state_dict(opt_data["scaler_state_dict"])
+                lr_scheduler.load_state_dict(opt_data["lr_state_dict"])
+            except Exception as e:
+                print(
+                    f"Warning: Failed to load optimizer/scheduler state (likely due to model architecture change). Resetting optimizer. Error: {e}"
+                )
 
     losses, best_epoch, best_criterion = get_best_epoch_and_history(
         args.save_dir, args.criterion
@@ -983,6 +1236,13 @@ def get_lr_scheduler(args, optimizer, num_steps_per_epoch):
 
 
 def main(args):
+    if args.debug_only:
+        global EPOCH_NUM_FRAMES
+        EPOCH_NUM_FRAMES = 500
+
+        global BASE_NUM_VAL_EPOCHS
+        BASE_NUM_VAL_EPOCHS = 2
+
     if args.num_workers is not None:
         global BASE_NUM_WORKERS
         BASE_NUM_WORKERS = args.num_workers
@@ -992,6 +1252,8 @@ def main(args):
             args.start_val_epoch = args.num_epochs - BASE_NUM_VAL_EPOCHS
         if args.crop_dim <= 0:
             args.crop_dim = None
+
+    wandb.init(project=args.wandb_project, config=args)  # Initialize wandb
 
     _data = get_datasets(args)
     classes = _data[0]
@@ -1004,6 +1266,13 @@ def main(args):
         modality=args.modality,
         multi_gpu=args.gpu_parallel,
         predict_location=args.predict_location,
+        pred_loc_arch=args.pred_loc_arch,
+        temp_gmlp_layers=args.temp_gmlp_layers,
+        loc_gmlp_layers=args.loc_gmlp_layers,
+        tgmlp_attn_dim=args.tgmlp_attn_dim,
+        lgmlp_attn_dim=args.lgmlp_attn_dim,
+        time_backward=args.time_backward,
+        use_channel_attention=args.use_channel_attention,
     )
 
     if not args.eval_only:
@@ -1019,7 +1288,7 @@ def main(args):
             batch_size=loader_batch_size,
             pin_memory=True,
             num_workers=get_num_train_workers(args),
-            prefetch_factor=1,
+            prefetch_factor=1 if args.num_workers > 0 else None,
             worker_init_fn=worker_init_fn,
         )
         val_loader = DataLoader(
@@ -1041,7 +1310,7 @@ def main(args):
 
         losses = []
         best_epoch = None
-        best_criterion = 0 if args.criterion == "map" else float("inf")
+        best_criterion = -0.1 if args.criterion == "map" else float("inf")
 
         epoch = 0
         if args.resume:
@@ -1050,6 +1319,7 @@ def main(args):
             )
             epoch += 1
 
+        # model._model = torch.compile(model._model)
         # Write it to console
         store_config("/dev/stdout", args, num_epochs, classes)
 
@@ -1064,7 +1334,27 @@ def main(args):
             val_loss_dict = model.epoch(val_loader, acc_grad_iter=args.acc_grad_iter)
 
             print(
-                f'[Epoch {epoch}] Train loss: cls={train_loss_dict["cls"]:0.5f}, loc={train_loss_dict["loc"]:0.5f}, sum={train_loss_dict["sum"]:0.5f} | Val loss: cls={val_loss_dict["cls"]:0.5f}, loc={val_loss_dict["loc"]:0.5f}, sum={val_loss_dict["sum"]:0.5f}'
+                "\n",
+                tabulate(
+                    [
+                        [
+                            "Train loss",
+                            train_loss_dict["cls"],
+                            train_loss_dict["loc"],
+                            train_loss_dict["contrast"],
+                            train_loss_dict["sum"],
+                        ],
+                        [
+                            "Val loss",
+                            val_loss_dict["cls"],
+                            val_loss_dict["loc"],
+                            val_loss_dict["contrast"],
+                            val_loss_dict["sum"],
+                        ],
+                    ],
+                    headers=[f"Epoch: {epoch}", "cls", "loc", "contrast", "sum"],
+                    floatfmt=".5f",
+                ),
             )
 
             val_mAP = 0
@@ -1107,6 +1397,14 @@ def main(args):
             )
             if args.save_dir is not None:
                 os.makedirs(args.save_dir, exist_ok=True)
+                wandb.log(
+                    {
+                        "epoch": epoch,
+                        "train_loss": train_loss_dict["sum"],
+                        "val_loss": val_loss_dict["sum"],
+                        "val_mAP": val_mAP,
+                    }
+                )  # Log metrics to wandb
                 store_json(
                     os.path.join(args.save_dir, "loss.json"), losses, pretty=True
                 )
@@ -1149,7 +1447,7 @@ def main(args):
     eval_splits = ["val"] if args.criterion != "map" else []
 
     # Evaluate on hold out splits
-    eval_splits += ["test", "challenge"]
+    eval_splits += [args.eval_split, "challenge"]
     for split in eval_splits:
         split_path = os.path.join("data", args.dataset, "{}.json".format(split))
         if os.path.exists(split_path):
@@ -1159,8 +1457,11 @@ def main(args):
                 args.frame_dir,
                 args.modality,
                 args.clip_len,
-                overlap_len=args.clip_len // 2,
+                is_eval=True,
+                # overlap_len=args.clip_len // 2,
+                overlap_len=0,
                 crop_dim=args.crop_dim,
+                num_videos=2 if args.debug_only else None,
             )
             split_data.print_info()
 
