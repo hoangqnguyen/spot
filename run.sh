@@ -19,14 +19,8 @@ export MKL_THREADING_LAYER=GNU
 export OPENBLAS_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 
-# 1-minute smoke test (Ctrl-C safe) to verify startup.
-# timeout -s INT -k 10s 60s python train_e2e_spatial.py hogak data/hogak/frames_224p \
-#   -m rny008_gsm -t gru --clip_len 64 --batch_size 8 --num_epochs 150 \
-#   -s exp/e2espatial_hogak --predict_location --num_workers 4 \
-#   --wandb_project e2espatial_hogak --debug_only
-
 # Full training.
-python train_e2e_spatial.py hogak data/hogak/frames_224p \
+python train_e2e_spatial.py vnl_2.0 data/vnl_2.0/frames_224p \
   -m rny008_gsm -t gru --clip_len 64 --batch_size 8 --num_epochs 150 \
-  -s exp/e2espatial_hogak --predict_location --num_workers 4 \
-  --wandb_project e2espatial_hogak
+  -s exp/e2espatial_vnl2 --predict_location --num_workers 4 \
+  --wandb_project e2espatial_vnl2

@@ -5,14 +5,11 @@ from torchvision.ops.focal_loss import sigmoid_focal_loss
 from util.score import compute_mAPs, compute_mAPs_with_locations
 from util.dataset import DATASETS, load_classes
 from util.io import load_json, store_json, store_gz_json, clear_files
-from util.eval import (
-    process_frame_predictions_with_location,
-    process_frame_predictions_with_location,
-)
+from util.eval import process_frame_predictions_with_location
 from dataset.frame import ActionSpotDataset, ActionSpotVideoDataset
 from model.modules import *
 from model.shift import make_temporal_shift
-from model.common import step, BaseRGBModel, MLP, SAFC
+from model.common import step, BaseRGBModel, MLP
 from tqdm import tqdm
 import timm
 import torchvision
@@ -94,35 +91,10 @@ def get_args():
     )
 
     parser.add_argument(
-        "--temp_gmlp_layers",
-        type=int,
-        default=2,
-    )
-
-    parser.add_argument(
         "-p",
         "--pred_loc_arch",
         type=str,
         default="mlp",
-        # choices=["mlp", "gmlp"],
-    )
-
-    parser.add_argument(
-        "--loc_gmlp_layers",
-        type=int,
-        default=2,
-    )
-
-    parser.add_argument(
-        "--tgmlp_attn_dim",
-        type=int,
-        default=None,
-    )
-
-    parser.add_argument(
-        "--lgmlp_attn_dim",
-        type=int,
-        default=None,
     )
 
     parser.add_argument(
@@ -268,10 +240,6 @@ class E2EModel(BaseRGBModel):
             modality,
             predict_location=False,
             pred_loc_arch="mlp",
-            temp_gmlp_layers=2,
-            loc_gmlp_layers=2,
-            tgmlp_attn_dim=None,
-            lgmlp_attn_dim=None,
             time_backward=False,
             use_channel_attention=False,
         ):
@@ -292,42 +260,18 @@ class E2EModel(BaseRGBModel):
                     Modules or Gated Shift Modules, respectively.
                 temporal_arch (str): Architecture for the temporal modeling head.
                     Supported: "gru", "deeper_gru", "mingru" (GRU variants),
-                               "mstcn" (Multi-Stage Temporal Convolutional Network),
-                               "asformer" (Action Segment Transformer),
-                               "" (simple Fully Connected layer),
-                               "gmlp" (gMLP network),
-                               "transformer_enc_only_base_11m" (Transformer Encoder),
-                               "mamba_1" (Mamba state space model),
-                               "bimamba" (Bidirectional Mamba),
-                               "rdfas6" (RDFAS6 model).
+                               "" (simple Fully Connected layer).
                 clip_len (int): Length of the input video clips (number of frames).
                 modality (str): Input data modality.
                     Supported: "rgb", "flow", "bw" (black & white).
                 predict_location (bool, optional): If True, a location prediction
                     head is added. Defaults to False.
                 pred_loc_arch (str, optional): Architecture for the location
-                    prediction head if `predict_location` is True.
-                    Supported: "fc" (Fully Connected), "safc" (Self-Attention FC),
-                               "mlp" (Multi-Layer Perceptron), "gmlp" (gMLP network).
-                    Defaults to "mlp".
-                temp_gmlp_layers (int, optional): Number of gMLP blocks for the
-                    temporal gMLP head. Defaults to 2.
-                loc_gmlp_layers (int, optional): Number of gMLP blocks for the
-                    location prediction gMLP head. Defaults to 2.
-                tgmlp_attn_dim (int, optional): Attention dimension for the
-                    temporal gMLP blocks. If None, standard gMLP is used.
-                    Defaults to None.
-                lgmlp_attn_dim (int, optional): Attention dimension for the
-                    location prediction gMLP blocks. If None, standard gMLP is used.
-                    Defaults to None.
+                    prediction head. Supported: "mlp". Defaults to "mlp".
                 time_backward (bool, optional): If True, processes temporal sequences
                     in reverse for models like GRU. Defaults to False.
                 use_channel_attention (bool, optional): If True, adds a channel
                     attention module after the feature extractor. Defaults to False.
-
-            Raises:
-                NotImplementedError: If an unsupported `feature_arch`,
-                    `temporal_arch`, or `pred_loc_arch` is provided.
             """
 
             super().__init__()
@@ -447,117 +391,14 @@ class E2EModel(BaseRGBModel):
                     )
                 else:
                     raise NotImplementedError(temporal_arch)
-            elif temporal_arch == "mstcn":
-                self._pred_fine = TCNPrediction(feat_dim, num_classes, 3)
-            elif temporal_arch == "asformer":
-                self._pred_fine = ASFormerPrediction(feat_dim, num_classes, 3)
             elif temporal_arch == "":
                 self._pred_fine = FCPrediction(feat_dim, num_classes)
-            elif temporal_arch == "gmlp":
-                from g_mlp_pytorch.g_mlp_pytorch import Residual, gMLPBlock, PreNorm
-
-                hidden_dim = feat_dim
-                self._pred_fine = nn.Sequential(
-                    nn.LayerNorm(hidden_dim),
-                    *[
-                        Residual(
-                            PreNorm(
-                                hidden_dim,
-                                gMLPBlock(
-                                    dim=hidden_dim,
-                                    dim_ff=hidden_dim * 2,
-                                    seq_len=clip_len,
-                                    heads=2,
-                                    attn_dim=tgmlp_attn_dim,
-                                ),
-                            )
-                        )
-                        for _ in range(temp_gmlp_layers)
-                    ],
-                    nn.Linear(hidden_dim, num_classes),
-                )
-            elif temporal_arch == "transformer_enc_only_base_11m":
-                from positional_encodings.torch_encodings import (
-                    PositionalEncoding1D,
-                    Summer,
-                )
-                from x_transformers import Encoder
-
-                hidden_dim = 256
-                down_projection = nn.Linear(
-                    feat_dim, hidden_dim
-                )  # feat_dim is too large, needs to down project
-                pos_enc = Summer(
-                    PositionalEncoding1D(hidden_dim)
-                )  # positional encoding for sequence
-                encoder = Encoder(
-                    dim=hidden_dim,
-                    depth=5,
-                    heads=8,
-                    attn_flash=True,
-                    layer_dropout=0.1,  # stochastic depth - dropout entire layer
-                    attn_dropout=0.1,  # dropout post-attention
-                    ff_dropout=0.1,  # feedforward dropout
-                )  # encoder-only transformer
-                # final classifier
-                fc = MLP(hidden_dim, hidden_dim, num_classes, 3)
-
-                # put everything together
-                self._pred_fine = nn.Sequential(down_projection, pos_enc, encoder, fc)
-
-            elif temporal_arch == "mamba_1":
-                from mamba_ssm import Mamba
-
-                hidden_dim = feat_dim
-                # down_projection = nn.Linear(feat_dim, hidden_dim)
-                mamba = Mamba(
-                    # This module uses roughly 3 * expand * d_model^2 parameters
-                    d_model=hidden_dim,  # Model dimension d_model
-                    d_state=16,  # SSM state expansion factor
-                    d_conv=4,  # Local convolution width
-                    expand=2,  # Block expansion factor
-                ).to("cuda")
-
-                fc = MLP(hidden_dim, hidden_dim, num_classes, 3)
-                self._pred_fine = nn.Sequential(mamba, fc)
-            elif temporal_arch == "bimamba":
-                from mamba_ssm import Mamba
-
-                hidden_dim = feat_dim
-                # down_projection = nn.Linear(feat_dim, hidden_dim)
-                mamba = Mamba(
-                    # This module uses roughly 3 * expand * d_model^2 parameters
-                    d_model=hidden_dim,  # Model dimension d_model
-                    d_state=16,  # SSM state expansion factor
-                    d_conv=4,  # Local convolution width
-                    expand=2,  # Block expansion factor,
-                    bimamba=True,
-                ).to("cuda")
-
-                fc = MLP(hidden_dim, hidden_dim, num_classes, 3)
-                self._pred_fine = nn.Sequential(mamba, fc)
-            elif temporal_arch == "rdfas6":
-                from model.rdfas6 import RDFAS6
-
-                hidden_dim = feat_dim
-                emb_c = 512
-                _temp_fine = RDFAS6(input_c=feat_dim, emb_c=emb_c)
-                fc = FCPrediction(emb_c, num_classes)
-
-                self._pred_fine = nn.Sequential(_temp_fine, fc)
             else:
                 raise NotImplementedError(temporal_arch)
 
             self._predict_location = predict_location
             if self._predict_location:
-
-                if pred_loc_arch == "fc":
-                    self._pred_loc = nn.Linear(hidden_dim, 2)
-
-                elif pred_loc_arch == "safc":
-                    self._pred_loc = SAFC(hidden_dim, 2)
-
-                elif pred_loc_arch == "mlp":
+                if pred_loc_arch == "mlp":
                     self._pred_loc = nn.Sequential(
                         MLP(
                             hidden_dim,
@@ -567,39 +408,10 @@ class E2EModel(BaseRGBModel):
                         ),
                         nn.Linear(hidden_dim, 2),
                     )
-
-                elif pred_loc_arch == "gmlp":
-                    from g_mlp_pytorch.g_mlp_pytorch import Residual, gMLPBlock, PreNorm
-
-                    self._pred_loc = nn.Sequential(
-                        nn.LayerNorm(hidden_dim),
-                        *[
-                            Residual(
-                                PreNorm(
-                                    hidden_dim,
-                                    gMLPBlock(
-                                        dim=hidden_dim,
-                                        dim_ff=hidden_dim * 2,
-                                        seq_len=clip_len,
-                                        heads=2,
-                                        attn_dim=lgmlp_attn_dim,
-                                    ),
-                                )
-                            )
-                            for _ in range(loc_gmlp_layers)
-                        ],
-                        nn.Linear(hidden_dim, 2),
-                    )
                 else:
                     raise NotImplementedError(
                         f"Unimplemented location predictor: {pred_loc_arch}"
                     )
-
-                # from model.common import ImprovedLocationPredictor
-
-                # self._pred_loc = ImprovedLocationPredictor(
-                #     input_dim=hidden_dim, hidden_dim=256, output_dim=2
-                # )
 
         def forward(self, x):
             batch_size, true_clip_len, channels, height, width = x.shape
@@ -666,10 +478,6 @@ class E2EModel(BaseRGBModel):
         predict_location=False,
         multi_gpu=False,
         pred_loc_arch="mlp",
-        temp_gmlp_layers=2,
-        loc_gmlp_layers=2,
-        tgmlp_attn_dim=None,
-        lgmlp_attn_dim=None,
         time_backward=False,
         use_channel_attention=False,
     ):
@@ -683,10 +491,6 @@ class E2EModel(BaseRGBModel):
             modality,
             predict_location,
             pred_loc_arch=pred_loc_arch,
-            temp_gmlp_layers=temp_gmlp_layers,
-            loc_gmlp_layers=loc_gmlp_layers,
-            tgmlp_attn_dim=tgmlp_attn_dim,
-            lgmlp_attn_dim=lgmlp_attn_dim,
             time_backward=time_backward,
             use_channel_attention=use_channel_attention,
         )
@@ -726,11 +530,7 @@ class E2EModel(BaseRGBModel):
         epoch_loss_loc = 0.0
         epoch_loss_contrast = 0.0
 
-        ctx = (
-            nullcontext()
-            if self._temporal_arch in ["rdfas6", "bimamba"]
-            else torch.cuda.amp.autocast()
-        )
+        ctx = torch.cuda.amp.autocast()
 
         with torch.no_grad() if optimizer is None else nullcontext():
             pbar = tqdm(loader)
@@ -832,11 +632,7 @@ class E2EModel(BaseRGBModel):
         if seq.device != self.device:
             seq = seq.to(self.device)
 
-        ctx = (
-            nullcontext()
-            if self._temporal_arch in ["rdfas6", "bimamba"]
-            else torch.cuda.amp.autocast()
-        )
+        ctx = torch.cuda.amp.autocast()
 
         self._model.eval()
         with torch.no_grad():
@@ -1267,10 +1063,6 @@ def main(args):
         multi_gpu=args.gpu_parallel,
         predict_location=args.predict_location,
         pred_loc_arch=args.pred_loc_arch,
-        temp_gmlp_layers=args.temp_gmlp_layers,
-        loc_gmlp_layers=args.loc_gmlp_layers,
-        tgmlp_attn_dim=args.tgmlp_attn_dim,
-        lgmlp_attn_dim=args.lgmlp_attn_dim,
         time_backward=args.time_backward,
         use_channel_attention=args.use_channel_attention,
     )

@@ -27,25 +27,25 @@ BATCH_SIZE=8
 NUM_WORKERS=4
 
 # Use a single save dir so stage-2 can resume directly from stage-1 checkpoints.
-SAVE_DIR="exp/e2espatial_pretrain_vnl2_finetune_hogak"
+SAVE_DIR="exp/e2espatial_pretrain_finetune"
 
-echo "=== Stage 1: Pretrain on vnl_2.0 for 100 epochs ==="
-python train_e2e_spatial.py vnl_2.0 data/vnl_2.0/frames_224p \
+echo "=== Stage 1: Pretrain on vnl_1.5 for 100 epochs ==="
+python train_e2e_spatial.py vnl_1.5 data/vnl_1.5/frames_224p \
   -m "${MODEL_ARCH}" -t "${TEMP_ARCH}" \
   --clip_len "${CLIP_LEN}" --batch_size "${BATCH_SIZE}" \
   --num_epochs 100 \
   -s "${SAVE_DIR}" \
   --predict_location --num_workers "${NUM_WORKERS}" \
-  --wandb_project e2espatial_vnl2_pretrain
+  --wandb_project e2espatial_pretrain
 
-echo "=== Stage 2: Finetune on hogak for +100 epochs (resume to epoch 200) ==="
-python train_e2e_spatial.py hogak data/hogak/frames_224p \
+echo "=== Stage 2: Finetune on vnl_2.0 for +100 epochs (resume to epoch 200) ==="
+python train_e2e_spatial.py vnl_2.0 data/vnl_2.0/frames_224p \
   -m "${MODEL_ARCH}" -t "${TEMP_ARCH}" \
   --clip_len "${CLIP_LEN}" --batch_size "${BATCH_SIZE}" \
   --num_epochs 200 \
   -s "${SAVE_DIR}" \
   --resume \
   --predict_location --num_workers "${NUM_WORKERS}" \
-  --wandb_project e2espatial_hogak_finetune
+  --wandb_project e2espatial_finetune
 
 echo "Done: pretrain + finetune complete."

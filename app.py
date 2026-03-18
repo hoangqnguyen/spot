@@ -128,7 +128,7 @@ if __name__ == "__main__":
     )
 
     print("Loading model")
-    config_dir = "exp/e2espatial_hogak"
+    config_dir = "exp/e2espatial_vnl2"
     config_path = os.path.join(config_dir, "config.json")
     checkpoint_path = os.path.join(config_dir, "checkpoint_140.pt")
     save_dir = os.path.join(config_dir, "tmp")

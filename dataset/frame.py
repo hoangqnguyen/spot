@@ -261,7 +261,6 @@ class ActionSpotDataset(Dataset):
                 "kovo" in self._dataset
                 or "imrcvolley" in self._dataset
                 or "vnl" in self._dataset
-                or "hogak" in self._dataset
             )
             else None
         )

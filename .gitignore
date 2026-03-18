@@ -1,26 +1,25 @@
-__pycache__
-.vscode
-work_dir
-data/kovo*
-kovo_train
-.ipynb_checkpoints
-exp/*
-train_schedule*.sh
-Test.ipynb
-eval.ipynb
-test.ipynb
-debug.py
-eval_vis.ipynb
-demo.ipynb
-demo_create.py
-.idea/misc.xml
-.idea/modules.xml
-.idea/spot_simple_reg.iml
-.idea/vcs.xml
-.idea/inspectionProfiles/profiles_settings.xml
-.idea/.gitignore
+__pycache__/
+*.pyc
+*.pyo
+
+# Experiment outputs and checkpoints
+exp/
+
+# Data directory (symlinks to local datasets)
 data/
-.gradio
+
+# Weights & Biases
 wandb/
-spot
-tmp
+
+# Gradio cache
+.gradio/
+
+# IDE
+.vscode/
+.idea/
+
+# Misc
+work_dir/
+tmp/
+*.ipynb
+debug.py

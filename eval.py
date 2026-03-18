@@ -5,7 +5,7 @@ import argparse
 import re
 
 from util.io import load_gz_json, load_json
-from util.dataset import DATASETS, FINEGYM_START_SET
+from util.dataset import DATASETS
 from util.score import compute_mAPs
 from util.eval import non_maximum_supression
 
@@ -21,10 +21,6 @@ def get_args():
     parser.add_argument('--nms_window', type=int, default=1)
 
     parser.add_argument('-t', '--tolerances', type=int, nargs='+')
-
-    # Start only set for finegym
-    parser.add_argument('--start', action='store_true',
-                        help='Restrict to start actions only for FineGym')
     return parser.parse_args()
 
 
@@ -42,7 +38,7 @@ def get_pred_file(pred_dir, split):
     raise FileNotFoundError('No suitable prediction file!')
 
 
-def main(dataset, pred_file, split, nms_window, tolerances, start):
+def main(dataset, pred_file, split, nms_window, tolerances):
     # Infer the name of the prediction file
     if os.path.isdir(pred_file):
         if dataset is None:
@@ -64,16 +60,6 @@ def main(dataset, pred_file, split, nms_window, tolerances, start):
             pred_file)
 
     truth = load_json(os.path.join('data', dataset, '{}.json'.format(split)))
-
-    if start:
-        assert dataset == 'finegym'
-        for p in pred:
-            p['events'] = [e for e in p['events'] if e['label']
-                           in FINEGYM_START_SET]
-        for t in truth:
-            t['events'] = [e for e in t['events'] if e['label']
-                           in FINEGYM_START_SET]
-            t['num_events'] = len(t['events'])
 
     kwargs = {}
     if tolerances is not None:

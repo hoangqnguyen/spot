@@ -495,7 +495,7 @@ def draw_filled_parallelogram(text, center_coordinates, image, dt):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--video_path", type=str, required=True, help="Path to the input video file")
-    parser.add_argument("--checkpoint_path", type=str, default="exp/e2espatial_hogak/checkpoint_140.pt", help="Path to the model checkpoint")
+    parser.add_argument("--checkpoint_path", type=str, default="exp/e2espatial_vnl2/checkpoint_best.pt", help="Path to the model checkpoint")
     parser.add_argument("--save_dir", type=str, default="exp/demo1", help="Directory to save predictions and output video")
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size for inference")
     parser.add_argument("--num_workers", type=int, default=4, help="Number of workers for data loading")
