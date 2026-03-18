@@ -1,6 +1,32 @@
-python train_e2e_spatial.py vnl_2.0  data/vnl_2.0/frames_224p  -m rny008_gsm -t gru --clip_len 64 --batch_size 8 --num_epochs 150 -s exp/e2espatial_vnl2.0   --predict_location  --num_workers 4  --wandb_project e2espatial_vnl2.0
+#!/usr/bin/env bash
 
-# Example: train on the new `hogak` dataset. Replace the `frame_dir` with your
-# prepared frames directory (e.g. `data/hogak/volli_dataset_json/frames_1080p` or
-# preprocessed `frames_224p` if you have resized frames).
-python train_e2e_spatial.py hogak data/hogak/frames_1080p -m rny008_gsm -t gru --clip_len 64 --batch_size 8 --num_epochs 150 -s exp/e2espatial_hogak --predict_location --num_workers 4 --wandb_project e2espatial_hogak
+# If invoked as `sh run.sh`, re-exec with bash.
+if [ -z "${BASH_VERSION:-}" ]; then
+  exec bash "$0" "$@"
+fi
+
+set -euo pipefail
+
+# If your PyTorch build errors with:
+#   undefined symbol: iJIT_NotifyEvent
+# preload the shared ITT runtime we created in the conda env.
+if [[ -n "${CONDA_PREFIX:-}" && -f "${CONDA_PREFIX}/lib/libittnotify.so" ]]; then
+  export LD_PRELOAD="${CONDA_PREFIX}/lib/libittnotify.so:${LD_PRELOAD:-}"
+fi
+
+export OMP_NUM_THREADS=1
+export MKL_THREADING_LAYER=GNU
+export OPENBLAS_NUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1
+
+# 1-minute smoke test (Ctrl-C safe) to verify startup.
+# timeout -s INT -k 10s 60s python train_e2e_spatial.py hogak data/hogak/frames_224p \
+#   -m rny008_gsm -t gru --clip_len 64 --batch_size 8 --num_epochs 150 \
+#   -s exp/e2espatial_hogak --predict_location --num_workers 4 \
+#   --wandb_project e2espatial_hogak --debug_only
+
+# Full training.
+python train_e2e_spatial.py hogak data/hogak/frames_224p \
+  -m rny008_gsm -t gru --clip_len 64 --batch_size 8 --num_epochs 150 \
+  -s exp/e2espatial_hogak --predict_location --num_workers 4 \
+  --wandb_project e2espatial_hogak

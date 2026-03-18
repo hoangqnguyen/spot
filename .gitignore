@@ -22,3 +22,5 @@ demo_create.py
 data/
 .gradio
 wandb/
+spot
+tmp
